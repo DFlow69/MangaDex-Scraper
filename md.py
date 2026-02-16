@@ -6,6 +6,7 @@ import time
 import re
 import unicodedata
 import json
+import zipfile
 import shutil
 import io
 from pathlib import Path
@@ -132,16 +133,29 @@ def search_manga(title: str, limit: int = 100) -> List[dict]:
         return []
     query_norm = _normalize_text(title)
     collected_raw = []
-    try:
-        params = {
-            "title": title, 
-            "limit": min(limit, 100),
-            "includes[]": ["cover_art"]
-        }
-        resp = api_get("/manga", params=params)
-        collected_raw.extend(resp.get("data", []))
-    except Exception:
-        collected_raw = []
+    
+    # URL Detection
+    url_match = re.search(r"mangadex\.org/title/([a-fA-F0-9\-]+)", title)
+    if url_match:
+        manga_id = url_match.group(1)
+        try:
+            resp = api_get(f"/manga/{manga_id}", params={"includes[]": ["cover_art"]})
+            data = resp.get("data")
+            if data:
+                collected_raw.append(data)
+        except: pass
+
+    if not collected_raw:
+        try:
+            params = {
+                "title": title, 
+                "limit": min(limit, 100),
+                "includes[]": ["cover_art"]
+            }
+            resp = api_get("/manga", params=params)
+            collected_raw.extend(resp.get("data", []))
+        except Exception:
+            collected_raw = []
     if not collected_raw or len(collected_raw) < 5:
         tokens = [t for t in re.split(r"[^A-Za-z0-9]+", title) if t]
         tries = []
@@ -278,6 +292,7 @@ def fetch_chapters_for_manga(manga_id: str, langs: Optional[List[str]] = None) -
                 "title": chap_title,
                 "volume": vol,
                 "language": lang_code,
+                "publishAt": attrs.get("publishAt"),
                 "groups": groups,
                 "attributes": attrs
             })
@@ -552,8 +567,9 @@ def main():
             title_text = c.get("title") or ""
             vol = c.get("volume") or ""
             lang_code = c.get("language") or ""
+            date_str = (c.get("publishAt") or "").split("T")[0]
             groups = ", ".join(c.get("groups") or []) or "-"
-            label = f"c{ch_text} - {title_text[:30]} [vol:{vol or '-'}] [{lang_code}] [{groups}]"
+            label = f"c{ch_text} - {title_text[:30]} [vol:{vol or '-'}] [{lang_code}] [{date_str}] [{groups}]"
             is_checked = c["id"] in pre_selected_ids
             chapter_choices.append(questionary.Choice(label, value=c["id"], checked=is_checked))
             chapter_mapping[c["id"]] = c
@@ -574,6 +590,9 @@ def main():
             continue
         use_saver = questionary.confirm("Use data-saver images (smaller)?", default=True).ask()
         if use_saver is None: continue
+        
+        make_cbz = questionary.confirm("Save chapters as CBZ files?", default=False).ask()
+        
         cwd = Path.cwd()
         title_map = selected.get('originalTitle') or {}
         en_title = title_map.get('en') or selected.get('title')
@@ -619,13 +638,26 @@ def main():
                 }
                 with open(meta_path, "w", encoding="utf-8") as fh:
                     json.dump(meta, fh, indent=2, ensure_ascii=False)
-                console.print(f"[green]Downloaded to {out_dir}[/green]")
+                
+                if make_cbz:
+                    cbz_path = Path(base_out) / f"chapter_{ch_num}_{chapter_id[:8]}.cbz"
+                    console.print(f"Archiving to {cbz_path.name}...")
+                    with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for item in out_dir.glob("*"):
+                            if item.is_file():
+                                zf.write(item, arcname=item.name)
+                    shutil.rmtree(out_dir)
+                    console.print(f"[green]Saved CBZ to {cbz_path}[/green]")
+                else:
+                    console.print(f"[green]Downloaded to {out_dir}[/green]")
+
             except Exception as e:
                 console.print(f"[red]Error downloading chapter {ch_num}: {e}[/red]")
-        share_now = questionary.confirm("Make ZIP of downloaded folder?", default=False).ask()
-        if share_now:
-            if os.path.exists(base_out):
-                zip_name = f"{Path(base_out).name}.zip"
+        if not make_cbz:
+            share_now = questionary.confirm("Make ZIP of downloaded folder?", default=False).ask()
+            if share_now:
+                if os.path.exists(base_out):
+                    zip_name = f"{Path(base_out).name}.zip"
                 console.print(f"Creating zip {zip_name} ...")
                 shutil.make_archive(Path(base_out).stem, 'zip', base_out)
                 console.print(f"[green]Created {zip_name}[/green]")

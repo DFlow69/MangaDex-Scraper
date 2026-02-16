@@ -1,3 +1,7 @@
+import shutil
+import zipfile
+import shutil
+import zipfile
 import sys
 import os
 import io
@@ -173,12 +177,22 @@ def search_manga(title: str, limit: int = 100) -> List[dict]:
     query_norm = _normalize_text(title)
     collected_raw = []
     
-    # 1. Direct search
-    try:
-        params = {"title": title, "limit": min(limit, 100), "includes[]": ["cover_art"]}
-        resp = api_get("/manga", params=params)
-        collected_raw.extend(resp.get("data", []))
-    except: pass
+    # 1. Direct search or URL parsing
+    url_match = re.search(r"mangadex\.org/title/([a-fA-F0-9\-]+)", title)
+    if url_match:
+        manga_id = url_match.group(1)
+        try:
+            resp = api_get(f"/manga/{manga_id}", params={"includes[]": ["cover_art"]})
+            data = resp.get("data")
+            if data:
+                collected_raw = [data]
+        except: pass
+    else:
+        try:
+            params = {"title": title, "limit": min(limit, 100), "includes[]": ["cover_art"]}
+            resp = api_get("/manga", params=params)
+            collected_raw.extend(resp.get("data", []))
+        except: pass
 
     # 2. Token fallback if few results
     if not collected_raw or len(collected_raw) < 5:
@@ -202,10 +216,13 @@ def search_manga(title: str, limit: int = 100) -> List[dict]:
         
         candidates = _all_title_candidates(attrs)
         matched = False
-        for cand in candidates:
-            if _matches_query(query_norm, _normalize_text(cand)):
-                matched = True
-                break
+        if direct_id and direct_id == manga_id:
+            matched = True
+        else:
+            for cand in candidates:
+                if _matches_query(query_norm, _normalize_text(cand)):
+                    matched = True
+                    break
         
         display_title_map = attrs.get("title") or {}
         # Default display title (we'll refine this in GUI)
@@ -262,6 +279,7 @@ def fetch_chapters_for_manga(manga_id: str, langs: Optional[List[str]] = None) -
                 "title": attrs.get("title", ""),
                 "volume": attrs.get("volume", ""),
                 "language": attrs.get("translatedLanguage", ""),
+                "publishAt": attrs.get("publishAt", ""),
                 "groups": list(set(groups)),
                 "attributes": attrs
             })
@@ -269,6 +287,22 @@ def fetch_chapters_for_manga(manga_id: str, langs: Optional[List[str]] = None) -
         offset += len(page_results)
         if len(page_results) < limit or offset >= 5000: break
     return chapters
+
+def format_date(iso_str):
+    if not iso_str: return ""
+    try:
+        # Simple ISO parse (YYYY-MM-DD)
+        return iso_str.split("T")[0]
+    except:
+        return iso_str
+
+def format_date(iso_str):
+    if not iso_str: return ""
+    try:
+        # Simple ISO parse (YYYY-MM-DD)
+        return iso_str.split("T")[0]
+    except:
+        return iso_str
 
 def get_chapter_info(chapter_id: str) -> dict:
     return api_get(f"/chapter/{chapter_id}").get("data", {})
@@ -335,11 +369,12 @@ class DownloadWorker(QThread):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, chapters, base_dir, use_saver):
+    def __init__(self, chapters, base_dir, use_saver, make_cbz=False):
         super().__init__()
         self.chapters = chapters
         self.base_dir = base_dir
         self.use_saver = use_saver
+        self.make_cbz = make_cbz
         self._is_running = True
 
     def stop(self):
@@ -404,6 +439,17 @@ class DownloadWorker(QThread):
                 with open(out_path / "metadata.json", "w", encoding="utf-8") as f:
                     json.dump(meta, f, indent=2)
                 
+                # CBZ Creation
+                if self.make_cbz:
+                    cbz_path = Path(self.base_dir) / f"{folder_name}.cbz"
+                    self.progress.emit(f"Creating CBZ: {cbz_path.name}")
+                    with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for item in out_path.glob("*"):
+                            if item.is_file():
+                                zf.write(item, arcname=item.name)
+                    # Cleanup folder
+                    shutil.rmtree(out_path)
+
             except Exception as e:
                 self.error.emit(f"Error Ch {ch_num}: {e}")
             
@@ -412,7 +458,7 @@ class DownloadWorker(QThread):
         self.finished.emit()
 
 class ImageLoader(QThread):
-    loaded = Signal(QPixmap)
+    loaded = Signal(QImage)
 
     def __init__(self, url):
         super().__init__()
@@ -423,7 +469,7 @@ class ImageLoader(QThread):
             r = requests.get(self.url, timeout=10)
             r.raise_for_status()
             img = QImage.fromData(r.content)
-            self.loaded.emit(QPixmap.fromImage(img))
+            self.loaded.emit(img)
         except:
             pass
 
@@ -651,6 +697,9 @@ class ModernMangaDexGUI(QMainWindow):
         self.btn_range.clicked.connect(self.select_chapter_range)
         
         # Download Controls (Moved from bottom)
+        self.cbz_chk = QCheckBox("Save as CBZ")
+        self.cbz_chk.setToolTip("Save chapters as .cbz files instead of folders")
+        
         self.data_saver_chk = QCheckBox("Data Saver")
         self.data_saver_chk.setToolTip("Use compressed images (saves bandwidth)")
         self.data_saver_chk.setChecked(True)
@@ -685,6 +734,7 @@ class ModernMangaDexGUI(QMainWindow):
 
         # Data Saver and Download
         self.chap_ctrl_layout.addWidget(self.data_saver_chk)
+        self.chap_ctrl_layout.addWidget(self.cbz_chk)
         self.chap_ctrl_layout.addStretch() # Push download button to far right
         self.chap_ctrl_layout.addWidget(self.download_btn)
         
@@ -692,7 +742,7 @@ class ModernMangaDexGUI(QMainWindow):
 
         # Chapter List (Expands to fill remaining space)
         self.chapter_tree = QTreeWidget()
-        self.chapter_tree.setHeaderLabels(["Ch", "Title", "Lang", "Group"])
+        self.chapter_tree.setHeaderLabels(["Ch", "Title", "Lang", "Group", "Date"])
         self.chapter_tree.setAlternatingRowColors(True)
         self.chapter_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.right_layout.addWidget(self.chapter_tree, stretch=1)
@@ -888,8 +938,8 @@ class ModernMangaDexGUI(QMainWindow):
             QMessageBox.warning(self, "Invalid Range", "Please enter valid numbers for the range.")
 
 
-    def set_cover_image(self, pixmap):
-        self.cover_label.set_pixmap(pixmap)
+    def set_cover_image(self, image):
+        self.cover_label.set_pixmap(QPixmap.fromImage(image))
 
     def on_lang_changed(self):
         selected_langs = [item.text() for item in self.lang_list.selectedItems()]
@@ -924,7 +974,8 @@ class ModernMangaDexGUI(QMainWindow):
                 str(c['chapter'] or "Oneshot"),
                 c['title'] or "",
                 c['language'],
-                ", ".join(c['groups']) if c['groups'] else "No Group"
+                ", ".join(c['groups']) if c['groups'] else "No Group",
+                format_date(c.get('publishAt'))
             ])
             item.setData(0, Qt.UserRole, c) # Store full chapter data
             # Checkbox behavior for tree items
@@ -1001,7 +1052,12 @@ class ModernMangaDexGUI(QMainWindow):
         self.log_text.setVisible(True) # Show log during download
         self.progress_bar.setValue(0)
         
-        self.download_worker = DownloadWorker(selected_chapters, str(manga_dir), self.data_saver_chk.isChecked())
+        self.download_worker = DownloadWorker(
+            selected_chapters, 
+            str(manga_dir), 
+            self.data_saver_chk.isChecked(),
+            self.cbz_chk.isChecked()
+        )
         self.download_worker.progress.connect(self.log)
         self.download_worker.percent.connect(self.progress_bar.setValue)
         self.download_worker.finished.connect(self.on_download_finished)
