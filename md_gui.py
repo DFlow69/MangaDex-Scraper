@@ -52,7 +52,6 @@ class ScalableImageLabel(QLabel):
             super().setPixmap(scaled)
         else:
             super().setText("No Cover")
-            super().setPixmap(QPixmap())
 
 class GroupFilterDialog(QDialog):
     def __init__(self, groups, parent=None):
@@ -287,14 +286,6 @@ def fetch_chapters_for_manga(manga_id: str, langs: Optional[List[str]] = None) -
         offset += len(page_results)
         if len(page_results) < limit or offset >= 5000: break
     return chapters
-
-def format_date(iso_str):
-    if not iso_str: return ""
-    try:
-        # Simple ISO parse (YYYY-MM-DD)
-        return iso_str.split("T")[0]
-    except:
-        return iso_str
 
 def format_date(iso_str):
     if not iso_str: return ""
@@ -745,6 +736,14 @@ class ModernMangaDexGUI(QMainWindow):
         self.chapter_tree.setHeaderLabels(["Ch", "Title", "Lang", "Group", "Date"])
         self.chapter_tree.setAlternatingRowColors(True)
         self.chapter_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        # Ensure columns resize nicely
+        header = self.chapter_tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents) # Ch
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Lang
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Date
+        header.setSectionResizeMode(1, QHeaderView.Stretch)          # Title (stretches)
+        header.setSectionResizeMode(3, QHeaderView.Interactive)      # Group (interactive)
+
         self.right_layout.addWidget(self.chapter_tree, stretch=1)
 
         # Progress & Logs (Moved up, removed bottom layout)
