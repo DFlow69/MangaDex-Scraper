@@ -1,0 +1,86 @@
+# MangaDex Scraper & GUI
+
+A feature-rich, dual-interface (GUI & TUI) application to search, view, and download manga chapters from [MangaDex](https://mangadex.org).
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+
+## Features
+
+- **Dual Interface**:
+  - **GUI**: Modern, scalable Qt-based interface with dark mode, cover previews, and advanced filtering.
+  - **TUI**: Keyboard-centric terminal interface for fast, lightweight usage.
+- **Search**: fast search with support for English and Romaji titles.
+- **Detailed Info**: View covers, descriptions, status, and available languages.
+- **Smart Filtering**:
+  - Filter chapters by Language.
+  - Filter by Scanlation Group.
+- **Flexible Downloading**:
+  - **Interactive Selection**: Pick specific chapters manually.
+  - **Range Selection**: Select by range (e.g., `1-10, 15, 20-25`).
+  - **Data Saver**: Option to use compressed images to save bandwidth.
+- **Resilient**:
+  - Threaded downloads to keep the UI responsive.
+  - Automatic retry on failed pages.
+  - Rate limit handling.
+
+## Installation
+
+1.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/DFlow69/MangaDex-Scraper.git
+    cd MangaDex-Scraper
+    ```
+
+2.  **Install Dependencies**:
+    You can run the provided PowerShell script:
+    ```powershell
+    ./install_requirements.ps1
+    ```
+    Or install manually via pip:
+    ```bash
+    pip install requests PySide6 pillow rich questionary prompt_toolkit tqdm
+    ```
+
+## Usage
+
+### Graphical User Interface (GUI)
+Run the compiled executable (Windows) or the Python script:
+- **Executable**: Double-click `MangaDexGUI.exe`
+- **Python**:
+  ```bash
+  python md_gui.py
+  ```
+
+**GUI Controls**:
+- **Search**: Type title and press Enter.
+- **Left Panel**: Search results and chapter list.
+- **Right Panel**: Manga details and cover.
+- **Chapter Selection**: Use `Shift+Click` or `Ctrl+Click` to select multiple, or use the "Select Range" button.
+- **Download**: Click "Download Selected" to start. Logs will appear at the bottom.
+
+### Terminal User Interface (TUI)
+Run the batch file or the Python script:
+- **Batch**: Double-click `run_tui.bat`
+- **Python**:
+  ```bash
+  python md.py
+  ```
+
+**TUI Controls**:
+- **Navigation**: Arrow keys (`↑` `↓`) or `k`/`j`.
+- **Selection**: `Space` to toggle, `Enter` to confirm.
+- **Shortcuts**: `a` (Select All), `i` (Invert Selection).
+
+## Building from Source
+
+To create the standalone `MangaDexGUI.exe`:
+
+```bash
+pip install pyinstaller
+pyinstaller --clean --onefile --noconsole --name MangaDexGUI md_gui.py
+```
+
+## Disclaimer
+
+This tool is for educational purposes and personal use only. Please respect the copyrights of the manga creators and publishers.
