@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+logs/
+Berserk/
+scraep.txt
+*.exe
+.DS_Store
+venv/
+.env

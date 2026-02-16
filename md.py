@@ -1,0 +1,651 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import os
+import sys
+import time
+import re
+import unicodedata
+import json
+import shutil
+import io
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+import requests
+import questionary
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.columns import Columns
+from rich.text import Text
+from rich.layout import Layout
+from rich.live import Live
+from rich.align import Align
+from prompt_toolkit.input import create_input
+from prompt_toolkit.keys import Keys
+from tqdm import tqdm
+from PIL import Image as PILImage
+
+API = "https://api.mangadex.org"
+console = Console()
+
+class TerminalImage:
+    def __init__(self, pil_img: PILImage.Image, width: Optional[int] = None):
+        self.img = pil_img
+        self.width = width
+
+    def __rich_console__(self, console, options):
+        max_width = self.width or options.max_width or console.width
+        max_width = max(10, max_width - 2)
+        w, h = self.img.size
+        ratio = max_width / w
+        new_w = int(w * ratio)
+        new_h = int(h * ratio)
+        if new_h % 2 != 0:
+            new_h += 1
+        try:
+            resample = PILImage.Resampling.LANCZOS
+        except AttributeError:
+            resample = PILImage.BICUBIC
+        img = self.img.resize((new_w, new_h), resample=resample)
+        img = img.convert("RGB")
+        for y in range(0, new_h - 1, 2):
+            line = Text()
+            for x in range(new_w):
+                r1, g1, b1 = img.getpixel((x, y))
+                r2, g2, b2 = img.getpixel((x, y + 1))
+                color1 = f"rgb({r1},{g1},{b1})"
+                color2 = f"rgb({r2},{g2},{b2})"
+                line.append("▀", style=f"{color1} on {color2}")
+            yield line
+
+COVER_CACHE = {}
+
+def fetch_cover_image(manga_id: str, filename: str) -> Optional[PILImage.Image]:
+    if not filename:
+        return None
+    cache_key = f"{manga_id}/{filename}"
+    if cache_key in COVER_CACHE:
+        return COVER_CACHE[cache_key]
+    url = get_cover_url(manga_id, filename, size=256)
+    try:
+        r = requests.get(url, timeout=5)
+        r.raise_for_status()
+        img = PILImage.open(io.BytesIO(r.content))
+        COVER_CACHE[cache_key] = img
+        return img
+    except:
+        return None
+
+def api_get(path: str, params: dict | None = None) -> dict:
+    url = API.rstrip("/") + "/" + path.lstrip("/")
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def _normalize_text(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _all_title_candidates(attrs: dict) -> List[str]:
+    titles = set()
+    if not attrs:
+        return []
+    title_map = attrs.get("title") or {}
+    for v in title_map.values():
+        if v:
+            titles.add(str(v))
+    alt = attrs.get("altTitles") or []
+    for entry in alt:
+        if isinstance(entry, dict):
+            for v in entry.values():
+                if v:
+                    titles.add(str(v))
+        elif isinstance(entry, str):
+            titles.add(entry)
+    extra = attrs.get("otherNames") or attrs.get("other_titles")
+    if extra and isinstance(extra, (list, tuple)):
+        for v in extra:
+            if v:
+                titles.add(str(v))
+    return list(titles)
+
+def _matches_query(query_norm: str, title_norm: str) -> bool:
+    if not query_norm or not title_norm:
+        return False
+    if query_norm in title_norm:
+        return True
+    q_tokens = query_norm.split()
+    t_tokens = set(title_norm.split())
+    if all(token in t_tokens for token in q_tokens):
+        return True
+    return False
+
+def search_manga(title: str, limit: int = 100) -> List[dict]:
+    title = (title or "").strip()
+    if not title:
+        return []
+    query_norm = _normalize_text(title)
+    collected_raw = []
+    try:
+        params = {
+            "title": title, 
+            "limit": min(limit, 100),
+            "includes[]": ["cover_art"]
+        }
+        resp = api_get("/manga", params=params)
+        collected_raw.extend(resp.get("data", []))
+    except Exception:
+        collected_raw = []
+    if not collected_raw or len(collected_raw) < 5:
+        tokens = [t for t in re.split(r"[^A-Za-z0-9]+", title) if t]
+        tries = []
+        if len(tokens) > 1:
+            tries.append(" ".join(tokens[:6]))
+            tries.extend(tokens[:4])
+            tries.extend(tokens[-2:])
+        else:
+            tries.append(title)
+        for q in tries:
+            try:
+                params = {
+                    "title": q, 
+                    "limit": 100,
+                    "includes[]": ["cover_art"]
+                }
+                resp = api_get("/manga", params=params)
+                for r in resp.get("data", []):
+                    if r not in collected_raw:
+                        collected_raw.append(r)
+            except Exception:
+                continue
+    if not collected_raw:
+        try:
+            params = {
+                "limit": 100, 
+                "order[followedCount]": "desc",
+                "includes[]": ["cover_art"]
+            }
+            resp = api_get("/manga", params=params)
+            collected_raw.extend(resp.get("data", []))
+        except Exception:
+            pass
+    results = []
+    seen_ids = set()
+    for item in collected_raw:
+        attrs = item.get("attributes", {}) or {}
+        manga_id = item.get("id")
+        if not manga_id or manga_id in seen_ids:
+            continue
+        cover_filename = None
+        for rel in item.get("relationships", []) or []:
+            if rel.get("type") == "cover_art":
+                rel_attrs = rel.get("attributes") or {}
+                cover_filename = rel_attrs.get("fileName")
+                break
+        candidates = _all_title_candidates(attrs)
+        matched = False
+        for cand in candidates:
+            cand_norm = _normalize_text(cand)
+            if _matches_query(query_norm, cand_norm):
+                matched = True
+                break
+        display_title_map = attrs.get("title") or {}
+        display_title = display_title_map.get("en") or next(iter(display_title_map.values()), None) or (candidates[0] if candidates else "Unknown")
+        desc_dict = attrs.get("description") or {}
+        description = desc_dict.get("en") or next(iter(desc_dict.values()), "") if desc_dict else "No description available."
+        results.append({
+            "id": manga_id,
+            "title": display_title,
+            "status": attrs.get("status"),
+            "description": description,
+            "cover_filename": cover_filename,
+            "originalTitle": display_title_map,
+            "matched": matched,
+            "all_candidates": candidates,
+            "available_languages": attrs.get("availableTranslatedLanguages", [])
+        })
+        seen_ids.add(manga_id)
+    results.sort(key=lambda r: (0 if r.get("matched") else 1, (r.get("title") or "").lower()))
+    return results[:limit]
+
+def get_cover_url(manga_id: str, filename: str, size: Optional[int] = None) -> str:
+    base = f"https://uploads.mangadex.org/covers/{manga_id}/{filename}"
+    if size in [256, 512]:
+        return f"{base}.{size}.jpg"
+    return base
+
+def render_cover_to_terminal(manga_id: str, filename: str):
+    if not filename:
+        console.print("[yellow]No cover available for this manga.[/yellow]")
+        return
+    url = get_cover_url(manga_id, filename, size=256)
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        img_data = io.BytesIO(r.content)
+        img = PILImage.open(img_data)
+        console.print(TerminalImage(img))
+    except Exception as e:
+        console.print(f"[red]Failed to render cover: {e}[/red]")
+
+def fetch_chapters_for_manga(manga_id: str, langs: Optional[List[str]] = None) -> List[dict]:
+    chapters = []
+    limit = 100
+    offset = 0
+    while True:
+        params = {
+            "manga": manga_id,
+            "limit": limit,
+            "offset": offset,
+            "order[chapter]": "asc",
+            "includes[]": "scanlation_group"
+        }
+        if langs:
+            params["translatedLanguage[]"] = langs
+        try:
+            resp = api_get("/chapter", params=params)
+        except Exception as e:
+            console.print(f"[red]Failed to fetch chapters page: {e}[/red]")
+            break
+        page_results = resp.get("data", [])
+        if not page_results:
+            break
+        for r in page_results:
+            attrs = r.get("attributes", {}) or {}
+            chap_id = r.get("id")
+            chap_num = attrs.get("chapter") or ""
+            chap_title = attrs.get("title") or ""
+            vol = attrs.get("volume") or ""
+            lang_code = attrs.get("translatedLanguage") or ""
+            groups = []
+            for rel in r.get("relationships", []) or []:
+                if rel.get("type") == "scanlation_group":
+                    name = None
+                    rel_attrs = rel.get("attributes") or {}
+                    name = rel_attrs.get("name") or rel.get("id")
+                    if name:
+                        groups.append(name)
+            groups = list(dict.fromkeys([g for g in groups if g]))
+            chapters.append({
+                "id": chap_id,
+                "chapter": chap_num,
+                "title": chap_title,
+                "volume": vol,
+                "language": lang_code,
+                "groups": groups,
+                "attributes": attrs
+            })
+        offset += len(page_results)
+        if len(page_results) < limit:
+            break
+        if offset >= 5000:
+            break
+    return chapters
+
+def get_chapter_info(chapter_id: str) -> dict:
+    data = api_get(f"/chapter/{chapter_id}")
+    return data.get("data") or {}
+
+def get_at_home_base(chapter_id: str) -> Optional[dict]:
+    data = api_get(f"/at-home/server/{chapter_id}")
+    return data
+
+def craft_image_urls(base_url: str, chapter_attrs: dict, use_data_saver: bool = True) -> List[str]:
+    hash_ = chapter_attrs.get("hash")
+    if use_data_saver:
+        files = chapter_attrs.get("dataSaver") or []
+        mode = "data-saver"
+    else:
+        files = chapter_attrs.get("data") or []
+        mode = "data"
+    if not hash_ or not files:
+        return []
+    base = base_url.rstrip("/")
+    return [f"{base}/{mode}/{hash_}/{fname}" for fname in files]
+
+def choose_from_list(prompt: str, choices: List[str]) -> Optional[str]:
+    if not choices:
+        console.print("[red]No choices available.[/red]")
+        return None
+    return questionary.select(prompt, choices=choices).ask()
+
+def download_images(urls: List[str], out_dir: str):
+    print(f"\nTarget folder is {out_dir}")
+    out_dir = Path(out_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        console.print(f"[red]Failed to create directory: {e}[/red]")
+        return
+    session = requests.Session()
+    for i, url in enumerate(urls, 1):
+        ext = ".jpg"
+        if "." in url:
+            parts = url.split(".")
+            potential_ext = parts[-1].split("?")[0]
+            if len(potential_ext) <= 4:
+                ext = f".{potential_ext}"
+        fname = f"{i:03d}{ext}"
+        dest = out_dir / fname
+        if dest.exists():
+            continue
+        try:
+            with session.get(url, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0) or 0)
+                desc = f"Page {i}/{len(urls)}"
+                with tqdm(total=total, unit="B", unit_scale=True, desc=desc, leave=False, dynamic_ncols=True) as t:
+                    with open(dest, "wb") as fh:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                fh.write(chunk)
+                                t.update(len(chunk))
+        except Exception as e:
+            console.print(f"[red]Failed to download {url}: {e}[/red]")
+    console.print(f"[bold green]Finished downloading {len(urls)} images to {out_dir}[/bold green]")
+
+def truncate_title(title: str, max_len: int = 20) -> str:
+    if len(title) > max_len:
+        return title[:max_len-3] + "..."
+    return title
+
+def make_layout(selected_manga: Optional[dict] = None, manga_list: List[dict] = [], cursor: int = 0) -> Layout:
+    layout = Layout()
+    layout.split_row(
+        Layout(name="left", ratio=1),
+        Layout(name="right", ratio=3)
+    )
+    table = Table(show_header=True, header_style="bold magenta", expand=True, box=None)
+    table.add_column("Search Results", no_wrap=True)
+    for i, m in enumerate(manga_list):
+        title = truncate_title(m['title'], 20)
+        style = "reverse" if i == cursor else ""
+        match_mark = "✓" if m.get("matched") else " "
+        table.add_row(f"{match_mark} {title}", style=style)
+    layout["left"].update(Panel(table, title="Manga", border_style="cyan"))
+    if selected_manga:
+        m_id = selected_manga["id"]
+        fname = selected_manga["cover_filename"]
+        img = fetch_cover_image(m_id, fname)
+        content = []
+        if img:
+            content.append(Align.center(TerminalImage(img, width=60)))
+        else:
+            content.append(Align.center("[yellow]No cover available[/yellow]"))
+        content.append(Text("\n"))
+        content.append(Panel(selected_manga.get("description", "No description"), title="Description", border_style="green"))
+        layout["right"].update(Panel(
+            Align.center(Columns(content, align="center")),
+            title=f"{selected_manga['title']} ({selected_manga['status']})",
+            border_style="bold cyan"
+        ))
+    else:
+        layout["right"].update(Panel(Align.center("\n\n[bold]Select a manga to see details[/bold]"), border_style="cyan"))
+    return layout
+
+def custom_manga_selector(results: List[dict]) -> Optional[dict]:
+    if not results: return None
+    cursor = 0
+    done = False
+    selected = None
+    with Live(make_layout(results[cursor], results, cursor), screen=True, auto_refresh=False) as live:
+        input_stream = create_input()
+        def handle_key():
+            nonlocal cursor, done, selected
+            for key_press in input_stream.read_keys():
+                if key_press.key == Keys.Up or key_press.key == "k":
+                    cursor = (cursor - 1) % len(results)
+                elif key_press.key == Keys.Down or key_press.key == "j":
+                    cursor = (cursor + 1) % len(results)
+                elif key_press.key == Keys.Enter:
+                    selected = results[cursor]
+                    done = True
+                elif key_press.key == Keys.Escape or key_press.key == "q":
+                    done = True
+                live.update(make_layout(results[cursor], results, cursor), refresh=True)
+        with input_stream.raw_mode():
+            while not done:
+                handle_key()
+                time.sleep(0.01)
+    return selected
+
+def main():
+    if os.name == 'nt':
+        os.system('mode con: cols=150 lines=45')
+    os.system('cls' if os.name == 'nt' else 'clear')
+    console.print("[bold green]MangaDex TUI — Grid Layout Mode[/bold green]")
+    while True:
+        action = questionary.select("Choose action", choices=["Search manga", "Exit"]).ask()
+        if action == "Exit" or action is None:
+            console.print("Goodbye.")
+            sys.exit(0)
+        query = questionary.text("Enter manga title to search:").ask()
+        if not query:
+            continue
+        os.system('cls' if os.name == 'nt' else 'clear')
+        console.print(f"Searching for: [bold]{query}[/bold] ...")
+        try:
+            results = search_manga(query, limit=40)
+        except Exception as e:
+            console.print(f"[red]Search failed: {e}[/red]")
+            continue
+        if not results:
+            console.print("[yellow]No results.[/yellow]")
+            continue
+        selected = custom_manga_selector(results)
+        if not selected:
+            continue
+        os.system('cls' if os.name == 'nt' else 'clear')
+        console.print(Panel(f"Selected: [bold cyan]{selected['title']}[/bold cyan]", expand=False))
+        is_correct = questionary.confirm("Proceed with this manga?", default=True).ask()
+        if not is_correct:
+            continue
+        manga_id = selected["id"]
+        console.print(f"Confirmed: [cyan]{selected['title']}[/cyan]")
+        
+        available_langs = sorted([str(l) for l in selected.get("available_languages", []) if l])
+        if not available_langs:
+            console.print("[yellow]No translated chapters found for this manga according to MangaDex.[/yellow]")
+            is_continue = questionary.confirm("Try fetching chapters anyway?", default=False).ask()
+            if not is_continue:
+                continue
+            selected_langs = None
+        else:
+            selected_langs = questionary.checkbox(
+                "Select languages for chapters (leave empty for all available):",
+                choices=available_langs
+            ).ask()
+        
+        lang_params = selected_langs if selected_langs else None
+        console.print("Fetching chapters (this may take a moment for large series)...")
+        try:
+            chapters = fetch_chapters_for_manga(manga_id, langs=lang_params)
+        except Exception as e:
+            console.print(f"[red]Failed to fetch chapters: {e}[/red]")
+            chapters = []
+        if not chapters:
+            console.print("[yellow]No chapters found for selected language / manga.[/yellow]")
+            continue
+        all_groups = set()
+        for c in chapters:
+            for g in c.get("groups", []):
+                all_groups.add(g)
+        filtered_chapters = chapters
+        if all_groups:
+            group_choices = sorted(list(all_groups))
+            selected_groups = questionary.checkbox(
+                "Filter by scanlation groups (leave empty for all):",
+                choices=group_choices
+            ).ask()
+            if selected_groups:
+                filtered_chapters = [
+                    c for c in chapters 
+                    if any(g in selected_groups for g in c.get("groups", []))
+                ]
+        if not filtered_chapters:
+            console.print("[yellow]No chapters left after group filtering.[/yellow]")
+            continue
+        def chap_key(c):
+            val = c.get("chapter")
+            if not val: return 999999.0
+            try:
+                return float(val)
+            except ValueError:
+                match = re.search(r"(\d+(\.\d+)?)", str(val))
+                return float(match.group(1)) if match else 999999.0
+        filtered_chapters.sort(key=chap_key)
+        # Ask user for selection method
+        selection_method = questionary.select(
+            "How do you want to select chapters?",
+            choices=["Interactive List", "Select by Range (e.g. 1-10, 15)", "Select All"]
+        ).ask()
+        
+        pre_selected_ids = set()
+        
+        if selection_method == "Select All":
+            pre_selected_ids = {c["id"] for c in filtered_chapters}
+        elif selection_method == "Select by Range (e.g. 1-10, 15)":
+            range_input = questionary.text("Enter chapter range (e.g. 1-5, 8, 10-12):").ask()
+            if range_input:
+                # Parse range
+                target_chapters = set()
+                parts = [p.strip() for p in range_input.split(",") if p.strip()]
+                for part in parts:
+                    if "-" in part:
+                        try:
+                            start, end = map(float, part.split("-"))
+                            # Add all chapters in range (inclusive)
+                            # We need to iterate through filtered_chapters to find matches
+                            for c in filtered_chapters:
+                                try:
+                                    c_val = float(c.get("chapter") or 0)
+                                    if start <= c_val <= end:
+                                        target_chapters.add(c["id"])
+                                except:
+                                    pass
+                        except ValueError:
+                            pass
+                    else:
+                        try:
+                            val = float(part)
+                            for c in filtered_chapters:
+                                try:
+                                    c_val = float(c.get("chapter") or 0)
+                                    if c_val == val:
+                                        target_chapters.add(c["id"])
+                                except:
+                                    pass
+                        except ValueError:
+                            pass
+                pre_selected_ids = target_chapters
+
+        chapter_choices = []
+        chapter_mapping = {}
+        for c in filtered_chapters:
+            ch_text = c.get("chapter") or "?"
+            title_text = c.get("title") or ""
+            vol = c.get("volume") or ""
+            lang_code = c.get("language") or ""
+            groups = ", ".join(c.get("groups") or []) or "-"
+            label = f"c{ch_text} - {title_text[:30]} [vol:{vol or '-'}] [{lang_code}] [{groups}]"
+            is_checked = c["id"] in pre_selected_ids
+            chapter_choices.append(questionary.Choice(label, value=c["id"], checked=is_checked))
+            chapter_mapping[c["id"]] = c
+        console.print("\n[bold yellow]Controls:[/bold yellow]")
+        console.print(" - Use [bold]Space[/bold] to mark/unmark a chapter")
+        console.print(" - Use [bold]A[/bold] to toggle all")
+        console.print(" - Use [bold]I[/bold] to invert selection")
+        console.print(" - Press [bold]Enter[/bold] when finished to start download\n")
+        selected_chapter_ids = questionary.checkbox(
+            "Confirm selection (Space to mark, Enter to confirm):",
+            choices=chapter_choices,
+            use_shortcuts=True,
+            validate=lambda x: True
+        ).ask()
+        if not selected_chapter_ids:
+            console.print("[yellow]No chapters selected. Did you use 'Space' to mark them?[/yellow]")
+            time.sleep(2)
+            continue
+        use_saver = questionary.confirm("Use data-saver images (smaller)?", default=True).ask()
+        if use_saver is None: continue
+        cwd = Path.cwd()
+        title_map = selected.get('originalTitle') or {}
+        en_title = title_map.get('en') or selected.get('title')
+        safe_title = "".join([c if c.isalnum() or c in " .-_" else "_" for c in en_title])
+        base_out_raw = questionary.text("Output folder name (or full path):", default=safe_title).ask()
+        if base_out_raw is None: continue
+        entered_path = Path(base_out_raw.strip() if base_out_raw.strip() else safe_title)
+        if not entered_path.is_absolute():
+            base_out_path = cwd / entered_path
+        else:
+            base_out_path = entered_path
+        final_parts = []
+        if base_out_path.anchor:
+            final_parts.append(base_out_path.anchor)
+        for part in base_out_path.parts[len(Path(base_out_path.anchor).parts):]:
+            sanitized_part = "".join([c if c.isalnum() or c in " .-_" else "_" for c in part])
+            final_parts.append(sanitized_part)
+        base_out = str(Path(*final_parts))
+        for chapter_id in selected_chapter_ids:
+            chapter_entry = chapter_mapping[chapter_id]
+            ch_num = chapter_entry.get('chapter') or '?'
+            console.print(f"Processing Chapter {ch_num} (ID: {chapter_id})...")
+            try:
+                chap_info = get_chapter_info(chapter_id)
+                athome_resp = get_at_home_base(chapter_id)
+                base = athome_resp.get("baseUrl")
+                athome_chapter = athome_resp.get("chapter", {})
+                attrs = chap_info.get("attributes", {})
+                if not attrs.get("data") and athome_chapter.get("data"):
+                    attrs = athome_chapter
+                image_urls = craft_image_urls(base, attrs, use_data_saver=use_saver)
+                if not image_urls:
+                    console.print(f"[red]No image URLs found for chapter {ch_num}.[/red]")
+                    continue
+                out_dir = Path(base_out) / f"chapter_{ch_num}_{chapter_id[:8]}"
+                download_images(image_urls, str(out_dir))
+                meta_path = out_dir / "metadata.json"
+                meta = {
+                    "manga": selected,
+                    "chapter_upload": chapter_entry,
+                    "downloaded_at": int(time.time()),
+                    "quality": "data-saver" if use_saver else "data"
+                }
+                with open(meta_path, "w", encoding="utf-8") as fh:
+                    json.dump(meta, fh, indent=2, ensure_ascii=False)
+                console.print(f"[green]Downloaded to {out_dir}[/green]")
+            except Exception as e:
+                console.print(f"[red]Error downloading chapter {ch_num}: {e}[/red]")
+        share_now = questionary.confirm("Make ZIP of downloaded folder?", default=False).ask()
+        if share_now:
+            if os.path.exists(base_out):
+                zip_name = f"{Path(base_out).name}.zip"
+                console.print(f"Creating zip {zip_name} ...")
+                shutil.make_archive(Path(base_out).stem, 'zip', base_out)
+                console.print(f"[green]Created {zip_name}[/green]")
+                console.print("Ways to share:")
+                console.print("- Upload the zip to Google Drive / Dropbox and share link")
+                console.print("- Start a simple HTTP server: `python -m http.server 8000` in the folder and let others download over LAN")
+                console.print("- Build a single-file executable with PyInstaller and share that binary")
+            else:
+                console.print("[red]Folder not found, skipping zip.[/red]")
+        console.print("[bold]Operation complete. Returning to main menu.[/bold]")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        console.print("\n[red]Cancelled by user.[/red]")
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"\n[bold red]An unexpected error occurred: {e}[/bold red]")
+        import traceback
+        traceback.print_exc()
+        console.input("\n[yellow]Press Enter to exit...[/yellow]")
+        sys.exit(1)
