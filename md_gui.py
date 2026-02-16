@@ -175,13 +175,14 @@ def search_manga(title: str, limit: int = 100) -> List[dict]:
     if not title: return []
     query_norm = _normalize_text(title)
     collected_raw = []
+    direct_id = None
     
     # 1. Direct search or URL parsing
     url_match = re.search(r"mangadex\.org/title/([a-fA-F0-9\-]+)", title)
     if url_match:
-        manga_id = url_match.group(1)
+        direct_id = url_match.group(1)
         try:
-            resp = api_get(f"/manga/{manga_id}", params={"includes[]": ["cover_art"]})
+            resp = api_get(f"/manga/{direct_id}", params={"includes[]": ["cover_art"]})
             data = resp.get("data")
             if data:
                 collected_raw = [data]
@@ -594,7 +595,10 @@ class ModernMangaDexGUI(QMainWindow):
         self.right_layout = QVBoxLayout(self.right_widget)
         self.right_layout.setContentsMargins(0, 0, 0, 0)
         self.splitter.addWidget(self.right_widget)
-        self.splitter.setSizes([400, 800])
+        # Give more space to the content area (similar to fullscreen ratio)
+        self.splitter.setSizes([350, 850])
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
 
         # Manga Info Frame (Fixed Height / Compact)
         self.info_frame = QFrame()
