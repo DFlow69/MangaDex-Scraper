@@ -272,14 +272,9 @@ def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
     soup = BeautifulSoup(html, "html.parser")
     chapters = []
     
-    # Section: comics-chapters
-    # Each chapter is usually a link in a list
-    # The layout varies, often id="chapters_box" or class="comics-chapters"
-    
     seen_ids = set()
     
     # Try finding all chapter links
-    # Typically: <a href="/comic/chapter/..." class="comics-chapters__item">
     links = soup.select(".comics-chapters .comics-chapters__item")
     if not links:
         # Fallback selector
@@ -290,22 +285,26 @@ def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
         if not href or href in seen_ids: continue
         seen_ids.add(href)
         
+        # Chapter text: e.g. "第95話"
         text = link.get_text(strip=True)
-        # Try to extract date if present in parent or nearby
-        # Often date is not easily available in list, or is inside a span
+        
+        # Try to parse number for sorting
+        # Extract digits from text
+        num_match = re.search(r'\d+', text)
+        chap_num = num_match.group(0) if num_match else "0"
         
         chapters.append({
             "id": href, # The relative URL is the ID
-            "chapter": text, # Use the text as chapter number/title
-            "title": text,
+            "chapter": chap_num, # Use extracted number if possible
+            "title": text, # Full text as title
             "volume": "",
             "language": "zh",
             "publishAt": "",
             "groups": [],
-            "attributes": {}
+            "attributes": {},
+            "source": "baozimh"
         })
     
-    # Baozimh lists newest first usually, but let's not assume sort
     return chapters
 
 def get_baozimh_images(chapter_url_path: str) -> List[str]:
@@ -999,7 +998,6 @@ def main():
         selected_chapter_ids = questionary.checkbox(
             "Confirm selection (Space to mark, Enter to confirm):",
             choices=chapter_choices,
-            use_shortcuts=True,
             validate=lambda x: True
         ).ask()
         
