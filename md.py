@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import re
+import uuid
 import unicodedata
 import json
 import zipfile
@@ -770,7 +771,14 @@ def main():
             current_source = data.get('source', 'MangaDex')
             
             # Legacy fix: Detect Baozimh from ID if source is missing
-            if "/comic/" in mid or "baozimh" in str(data.get("cover_url", "")):
+            # If ID is not a UUID, it's definitely not MangaDex
+            try:
+                uuid.UUID(mid)
+                is_uuid = True
+            except ValueError:
+                is_uuid = False
+
+            if not is_uuid or "/comic/" in mid or "baozimh" in str(data.get("cover_url", "")):
                 current_source = "Baozimh"
                 
             selected = {
@@ -779,7 +787,8 @@ def main():
                 "status": "In Library",
                 "description": "Loaded from Library",
                 "cover_filename": data.get('cover_url'),
-                "available_languages": [] 
+                "available_languages": [],
+                "source": current_source
             }
 
         elif action == "Search manga":
