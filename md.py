@@ -27,6 +27,10 @@ from prompt_toolkit.input import create_input
 from prompt_toolkit.keys import Keys
 from tqdm import tqdm
 from PIL import Image as PILImage
+try:
+    import zhconv
+except ImportError:
+    zhconv = None
 
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -147,35 +151,8 @@ def get_anilist_chinese_title(query: str) -> Optional[str]:
         pass
     return None
 
-def get_mangaupdates_title(query: str) -> Optional[str]:
-    logging.debug(f"Searching MangaUpdates for: {query}")
-                          
-    url = "https://api.mangaupdates.com/v1/series/search"
-    payload = {
-        "search": query,
-        "page": 1,
-        "perpage": 1
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            results = data.get("results", [])
-            if results:
-                                                      
-                rec = results[0].get("record", {})
-                title = rec.get("title")
-                if title:
-                    logging.info(f"Found MangaUpdates title: {title}")
-                    return title
-    except Exception as e:
-        logging.error(f"Error: {e}")
-        pass
-    return None
-
-def get_english_title(chinese_title: str) -> Optional[str]:
-    logging.debug(f"Getting English title for: {chinese_title}")
-                          
+def get_anilist_english_title(query: str) -> Optional[str]:
+    # Wrapper for AniList GraphQL query
     url = 'https://graphql.anilist.co'
     query_graphql = '''
     query ($search: String) {
@@ -184,26 +161,89 @@ def get_english_title(chinese_title: str) -> Optional[str]:
           english
           romaji
         }
+        format
       }
     }
     '''
-    variables = {'search': chinese_title}
+    variables = {'search': query}
     try:
         r = requests.post(url, json={'query': query_graphql, 'variables': variables}, timeout=3)
         if r.status_code == 200:
             data = r.json()
             media = data.get('data', {}).get('Media')
             if media:
+                fmt = media.get('format')
+                if fmt == 'NOVEL':
+                    logging.info(f"Skipping Novel result from AniList for {query}")
+                    return None
                 eng = media.get('title', {}).get('english') or media.get('title', {}).get('romaji')
-                if eng:
-                    logging.info(f"Found AniList title: {eng}")
+                if eng: 
+                    logging.info(f"Found AniList title for '{query}': {eng}")
                     return eng
     except Exception as e:
-        logging.error(f"Error: {e}")
-        pass
+        logging.error(f"Error fetching AniList for {query}: {e}")
+    return None
 
-                                  
-    return get_mangaupdates_title(chinese_title)
+def get_mangaupdates_title(query: str) -> Optional[str]:
+    logging.debug(f"Searching MangaUpdates for: {query}")
+                          
+    url = "https://api.mangaupdates.com/v1/series/search"
+    payload = {
+        "search": query,
+        "page": 1,
+        "perpage": 5
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            results = data.get("results", [])
+            for res in results:
+                rec = res.get("record", {})
+                title = rec.get("title")
+                # Skip if title contains (Novel) or type is Novel (though type is not in record usually, check API)
+                # Usually titles have (Novel) suffix
+                if title and "(Novel)" in title:
+                    logging.info(f"Skipping Novel result from MangaUpdates: {title}")
+                    continue
+                
+                # If we have a valid title, return it
+                if title:
+                    logging.info(f"Found MangaUpdates title: {title}")
+                    return title
+    except Exception as e:
+        logging.error(f"Error: {e}")
+    return None
+
+def get_english_title(chinese_title: str) -> Optional[str]:
+    logging.debug(f"Getting English title for: {chinese_title}")
+    
+    # 1. Try original query on AniList
+    res = get_anilist_english_title(chinese_title)
+    if res: return res
+
+    # 2. Try Simplified Chinese if available
+    simplified = None
+    if zhconv:
+        try:
+            simplified = zhconv.convert(chinese_title, 'zh-cn')
+            if simplified != chinese_title:
+                logging.debug(f"Trying Simplified Chinese: {simplified}")
+                res = get_anilist_english_title(simplified)
+                if res: return res
+        except Exception as e:
+            logging.error(f"Error converting to Simplified: {e}")
+
+    # 3. Try MangaUpdates fallback (original)
+    res = get_mangaupdates_title(chinese_title)
+    if res: return res
+    
+    # 4. Try MangaUpdates fallback (simplified)
+    if simplified and simplified != chinese_title:
+        res = get_mangaupdates_title(simplified)
+        if res: return res
+        
+    return None
 
 def search_baozimh(query: str) -> List[dict]:
     logging.debug(f"Searching Baozimh with query: {query}")
