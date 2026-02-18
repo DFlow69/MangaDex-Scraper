@@ -134,6 +134,30 @@ def get_anilist_chinese_title(query: str) -> Optional[str]:
         pass
     return None
 
+def get_anilist_english_title(chinese_title: str) -> Optional[str]:
+    url = 'https://graphql.anilist.co'
+    query_graphql = '''
+    query ($search: String) {
+      Media (search: $search, type: MANGA) {
+        title {
+          english
+          romaji
+        }
+      }
+    }
+    '''
+    variables = {'search': chinese_title}
+    try:
+        r = requests.post(url, json={'query': query_graphql, 'variables': variables}, timeout=3)
+        if r.status_code == 200:
+            data = r.json()
+            media = data.get('data', {}).get('Media')
+            if media:
+                return media.get('title', {}).get('english') or media.get('title', {}).get('romaji')
+    except:
+        pass
+    return None
+
 def search_baozimh(query: str) -> List[dict]:
     # Try direct URL
     if "baozimh.com" in query:
@@ -148,6 +172,11 @@ def search_baozimh(query: str) -> List[dict]:
                 title_tag = soup.select_one(".comics-detail__title") or soup.select_one("h1")
                 title = title_tag.get_text(strip=True) if title_tag else manga_id
                 
+                # Try to get English title for direct URL too
+                eng = get_anilist_english_title(title)
+                if eng:
+                    title = f"{eng} ({title})"
+                
                 cover_tag = soup.select_one("amp-img.comics-detail__poster") or soup.select_one(".comics-detail__poster amp-img")
                 cover_url = cover_tag.get("src") or cover_tag.get("data-src") if cover_tag else ""
                 
@@ -159,7 +188,8 @@ def search_baozimh(query: str) -> List[dict]:
                     "cover_filename": cover_url,
                     "matched": True,
                     "all_candidates": [],
-                    "available_languages": ["zh"]
+                    "available_languages": ["zh"],
+                    "source": "baozimh"
                 }]
         except:
             pass
@@ -172,7 +202,8 @@ def search_baozimh(query: str) -> List[dict]:
             "cover_filename": "",
             "matched": True,
             "all_candidates": [],
-            "available_languages": ["zh"]
+            "available_languages": ["zh"],
+            "source": "baozimh"
         }]
 
     # Try AniList bridge
@@ -187,11 +218,16 @@ def search_baozimh(query: str) -> List[dict]:
     results = []
     
     # Comics are usually in div.comics-card
-    for card in soup.find_all("div", class_="comics-card"):
+    cards = soup.find_all("div", class_="comics-card")
+    
+    # Limit to top 10 to avoid too many API calls
+    for card in cards[:10]:
         try:
             a_tag = card.find("a", class_="comics-card__poster")
             if not a_tag: continue
             href = a_tag.get("href")
+            # href is like /comic/some-id
+            manga_id = href.split("/")[-1]
             
             img_tag = a_tag.find("amp-img")
             cover_url = img_tag.get("src") if img_tag else ""
@@ -199,26 +235,36 @@ def search_baozimh(query: str) -> List[dict]:
             title_tag = card.find("h3", class_="comics-card__title")
             title_text = title_tag.get_text(strip=True) if title_tag else "Unknown"
             
+            # Try to fetch English title
+            eng_title = get_anilist_english_title(title_text)
+            display_title = f"{eng_title} ({title_text})" if eng_title else title_text
+            
             tags_div = card.find("div", class_="tags")
             status_text = tags_div.get_text(strip=True) if tags_div else ""
             
             results.append({
-                "id": href,
-                "title": title_text,
+                "id": manga_id,
+                "title": display_title,
                 "status": status_text,
                 "description": "No description available (Baozimh)",
                 "cover_filename": cover_url, # Use full URL
                 "matched": True,
                 "all_candidates": [title_text],
-                "available_languages": ["zh"]
+                "available_languages": ["zh"],
+                "source": "baozimh"
             })
         except:
             continue
             
     return results
 
-def fetch_chapters_baozimh(manga_path: str) -> List[dict]:
-    url = f"{BAOZIMH_BASE}{manga_path}"
+def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
+    # Handle both full path (old) and ID only (new)
+    if manga_id.startswith("/comic/"):
+        url = f"{BAOZIMH_BASE}{manga_id}"
+    else:
+        url = f"{BAOZIMH_BASE}/comic/{manga_id}"
+        
     html = fetch_baozimh_html(url)
     if not html: return []
     
@@ -442,7 +488,8 @@ def search_manga(title: str, limit: int = 100) -> List[dict]:
             "originalTitle": display_title_map,
             "matched": matched,
             "all_candidates": candidates,
-            "available_languages": attrs.get("availableTranslatedLanguages", [])
+            "available_languages": attrs.get("availableTranslatedLanguages", []),
+            "source": "mangadex"
         })
         seen_ids.add(manga_id)
     results.sort(key=lambda r: (0 if r.get("matched") else 1, (r.get("title") or "").lower()))
@@ -721,6 +768,11 @@ def main():
                 
             mid, data = selection
             current_source = data.get('source', 'MangaDex')
+            
+            # Legacy fix: Detect Baozimh from ID if source is missing
+            if "/comic/" in mid or "baozimh" in str(data.get("cover_url", "")):
+                current_source = "Baozimh"
+                
             selected = {
                 "id": mid,
                 "title": data.get('title'),
