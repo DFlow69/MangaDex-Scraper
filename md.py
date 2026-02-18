@@ -29,6 +29,7 @@ from PIL import Image as PILImage
 
 API = "https://api.mangadex.org"
 BAOZIMH_BASE = "https://www.baozimh.com"
+LIBRARY_FILE = "library.json"
 console = Console()
 
 class TerminalImage:
@@ -630,6 +631,22 @@ def custom_manga_selector(results: List[dict]) -> Optional[dict]:
                 time.sleep(0.01)
     return selected
 
+def load_library() -> dict:
+    if os.path.exists(LIBRARY_FILE):
+        try:
+            with open(LIBRARY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_library(library: dict):
+    try:
+        with open(LIBRARY_FILE, "w", encoding="utf-8") as f:
+            json.dump(library, f, indent=4)
+    except Exception as e:
+        console.print(f"[red]Failed to save library: {e}[/red]")
+
 def main():
     if os.name == 'nt':
         os.system('mode con: cols=150 lines=45')
@@ -642,7 +659,7 @@ def main():
     while True:
         action = questionary.select(
             f"Choose action (Current: {current_source})", 
-            choices=["Search manga", "Change Source", "Exit"]
+            choices=["Search manga", "Library", "Change Source", "Exit"]
         ).ask()
         
         if action == "Exit" or action is None:
@@ -658,27 +675,59 @@ def main():
                 current_source = new_source
             continue
             
-        # Search manga
-        query = questionary.text("Enter manga title to search:").ask()
-        if not query:
-            continue
-        os.system('cls' if os.name == 'nt' else 'clear')
-        console.print(f"Searching for: [bold]{query}[/bold] on {current_source} ...")
-        
-        try:
-            if current_source == "MangaDex":
-                results = search_manga(query, limit=40)
-            else:
-                results = search_baozimh(query)
-        except Exception as e:
-            console.print(f"[red]Search failed: {e}[/red]")
-            continue
+        selected = None
+
+        if action == "Library":
+            lib = load_library()
+            if not lib:
+                console.print("[yellow]Library is empty.[/yellow]")
+                continue
             
-        if not results:
-            console.print("[yellow]No results.[/yellow]")
-            continue
+            items = sorted(lib.items(), key=lambda x: x[1].get('title', '').lower())
+            choices = []
+            for mid, data in items:
+                t = data.get('title', 'Unknown')
+                s = data.get('source', 'MangaDex')
+                choices.append(questionary.Choice(f"{t} [{s}]", value=(mid, data)))
+            choices.append(questionary.Choice("Back", value=None))
             
-        selected = custom_manga_selector(results)
+            selection = questionary.select("Select from Library:", choices=choices).ask()
+            if not selection:
+                continue
+                
+            mid, data = selection
+            current_source = data.get('source', 'MangaDex')
+            selected = {
+                "id": mid,
+                "title": data.get('title'),
+                "status": "In Library",
+                "description": "Loaded from Library",
+                "cover_filename": data.get('cover_url'),
+                "available_languages": [] 
+            }
+
+        elif action == "Search manga":
+            query = questionary.text("Enter manga title to search:").ask()
+            if not query:
+                continue
+            os.system('cls' if os.name == 'nt' else 'clear')
+            console.print(f"Searching for: [bold]{query}[/bold] on {current_source} ...")
+            
+            try:
+                if current_source == "MangaDex":
+                    results = search_manga(query, limit=40)
+                else:
+                    results = search_baozimh(query)
+            except Exception as e:
+                console.print(f"[red]Search failed: {e}[/red]")
+                continue
+                
+            if not results:
+                console.print("[yellow]No results.[/yellow]")
+                continue
+                
+            selected = custom_manga_selector(results)
+            
         if not selected:
             continue
             
@@ -691,6 +740,40 @@ def main():
         manga_id = selected["id"]
         console.print(f"Confirmed: [cyan]{selected['title']}[/cyan]")
         
+        # --- Library Actions ---
+        lib = load_library()
+        is_in_lib = manga_id in lib
+        
+        menu_choices = ["View Chapters / Download"]
+        if is_in_lib:
+            menu_choices.append("Remove from Library")
+        else:
+            menu_choices.append("Add to Library")
+        menu_choices.append("Back to Main Menu")
+        
+        user_action = questionary.select("Action:", choices=menu_choices).ask()
+        
+        if user_action == "Back to Main Menu":
+            continue
+            
+        if user_action == "Add to Library":
+            lib[manga_id] = {
+                "title": selected['title'],
+                "added_at": time.time(),
+                "last_chapter": "",
+                "has_update": False,
+                "source": current_source,
+                "cover_url": selected.get('cover_filename')
+            }
+            save_library(lib)
+            console.print(f"[green]Added '{selected['title']}' to library![/green]")
+            
+        elif user_action == "Remove from Library":
+            if manga_id in lib:
+                del lib[manga_id]
+                save_library(lib)
+                console.print(f"[yellow]Removed '{selected['title']}' from library.[/yellow]")
+
         # --- Language Selection (MangaDex Only) ---
         selected_langs = None
         if current_source == "MangaDex":
