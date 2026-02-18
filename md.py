@@ -1,6 +1,5 @@
-import logging
-                      
 from __future__ import annotations
+import logging
 import os
 import sys
 import time
@@ -460,7 +459,7 @@ def search_manga(title: str, limit: int = 100) -> List[dict]:
             if data:
                 collected_raw.append(data)
         except Exception as e:
-            logging.error(f"Error: {e}") pass
+            logging.error(f"Error: {e}")
 
     if not collected_raw:
         try:
