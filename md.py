@@ -138,10 +138,34 @@ def search_baozimh(query: str) -> List[dict]:
     # Try direct URL
     if "baozimh.com" in query:
         # e.g. https://www.baozimh.com/comic/some-id
-        # We can just return a fake result that points to this ID
-        path = query.split("baozimh.com")[-1]
+        manga_id = query.split("/")[-1]
+        
+        # Fetch page to get details
+        try:
+            html = fetch_baozimh_html(query)
+            if html:
+                soup = BeautifulSoup(html, "html.parser")
+                title_tag = soup.select_one(".comics-detail__title") or soup.select_one("h1")
+                title = title_tag.get_text(strip=True) if title_tag else manga_id
+                
+                cover_tag = soup.select_one("amp-img.comics-detail__poster") or soup.select_one(".comics-detail__poster amp-img")
+                cover_url = cover_tag.get("src") or cover_tag.get("data-src") if cover_tag else ""
+                
+                return [{
+                    "id": manga_id,
+                    "title": title,
+                    "status": "Ongoing",
+                    "description": "Loaded from URL",
+                    "cover_filename": cover_url,
+                    "matched": True,
+                    "all_candidates": [],
+                    "available_languages": ["zh"]
+                }]
+        except:
+            pass
+            
         return [{
-            "id": path,
+            "id": manga_id,
             "title": "Direct URL Match",
             "status": "Unknown",
             "description": "Direct URL",

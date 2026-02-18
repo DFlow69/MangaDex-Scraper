@@ -435,6 +435,54 @@ def search_baozimh(query: str) -> List[dict]:
     query = (query or "").strip()
     if not query: return []
     
+    # Direct URL / ID Handling
+    if "baozimh.com" in query:
+        # Extract ID from URL
+        # e.g. https://www.baozimh.com/comic/some-id
+        manga_id = query.split("/")[-1]
+        
+        # Attempt to fetch page to get real title/cover
+        try:
+            html = fetch_baozimh_html(query)
+            if html:
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Title: usually h1 or class .comics-detail__title
+                title_tag = soup.select_one(".comics-detail__title") or soup.select_one("h1")
+                title = title_tag.get_text(strip=True) if title_tag else manga_id
+                
+                # Cover: .comics-detail__poster
+                cover_tag = soup.select_one("amp-img.comics-detail__poster") or soup.select_one(".comics-detail__poster amp-img")
+                cover_url = None
+                if cover_tag:
+                    cover_url = cover_tag.get("src") or cover_tag.get("data-src")
+                    
+                return [{
+                    "id": manga_id,
+                    "title": title,
+                    "attributes": {"title": {"en": title, "zh": title}},
+                    "status": "Ongoing",
+                    "description": "Loaded from URL",
+                    "cover_filename": None,
+                    "cover_url": cover_url,
+                    "available_languages": ["zh"],
+                    "source": "baozimh"
+                }]
+        except:
+            pass
+
+        return [{
+            "id": manga_id,
+            "title": "Direct URL Match",
+            "attributes": {"title": {"en": "Direct URL Match", "zh": "Direct URL Match"}},
+            "status": "Unknown",
+            "description": "Direct URL Match",
+            "cover_filename": None,
+            "cover_url": None,
+            "available_languages": ["zh"],
+            "source": "baozimh"
+        }]
+    
     # 1. Try AniList bridge for English -> Chinese
     # If query is ASCII (likely English/Romaji), try to get Chinese title
     if all(ord(c) < 128 for c in query):
@@ -1533,19 +1581,34 @@ class ModernMangaDexGUI(QMainWindow):
         
         mid = self.selected_manga['id']
         title = self.get_preferred_title(self.selected_manga)
+        source = self.selected_manga.get('source', 'mangadex')
+        cover_url = self.selected_manga.get('cover_url') or self.selected_manga.get('cover_filename')
         
         self.library[mid] = {
             "title": title,
             "added_at": time.time(),
             "last_chapter": "", 
-            "has_update": False
+            "has_update": False,
+            "source": source,
+            "cover_url": cover_url
         }
         self.save_library()
         QMessageBox.information(self, "Library", f"Added '{title}' to library.")
 
     def load_manga_from_library(self, mid):
-        fake_url = f"https://mangadex.org/title/{mid}"
-        self.search_input.setText(fake_url)
+        data = self.library.get(mid, {})
+        source = data.get('source', 'mangadex')
+        
+        if source == 'baozimh':
+            self.site_combo.setCurrentText("Baozimh")
+            # Set search input to full URL so search_baozimh catches it
+            fake_url = f"https://www.baozimh.com/comic/{mid}"
+            self.search_input.setText(fake_url)
+        else:
+            self.site_combo.setCurrentText("MangaDex")
+            fake_url = f"https://mangadex.org/title/{mid}"
+            self.search_input.setText(fake_url)
+            
         self.start_search()
 
 if __name__ == "__main__":
