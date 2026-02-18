@@ -777,8 +777,29 @@ def main():
             except ValueError:
                 is_uuid = False
 
+            needs_update = False
             if not is_uuid or "/comic/" in mid or "baozimh" in str(data.get("cover_url", "")):
                 current_source = "Baozimh"
+                if data.get('source') != "baozimh":
+                    data['source'] = "baozimh"
+                    needs_update = True
+                
+                # Try to fix title if it's purely Chinese
+                current_title = data.get('title', '')
+                # Simple check: if no english letters/parentheses, probably just Chinese
+                # Or just always try if no parens
+                if current_title and "(" not in current_title:
+                    console.print("[cyan]Checking for English title...[/cyan]")
+                    eng = get_anilist_english_title(current_title)
+                    if eng:
+                        new_title = f"{eng} ({current_title})"
+                        data['title'] = new_title
+                        needs_update = True
+                        console.print(f"[green]Updated title: {new_title}[/green]")
+
+            if needs_update:
+                lib[mid] = data
+                save_library(lib)
                 
             selected = {
                 "id": mid,
