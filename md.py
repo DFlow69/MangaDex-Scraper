@@ -760,10 +760,13 @@ def main():
                 t = data.get('title', 'Unknown')
                 s = data.get('source', 'MangaDex')
                 choices.append(questionary.Choice(f"{t} [{s}]", value=(mid, data)))
-            choices.append(questionary.Choice("Back", value=None))
+            choices.append(questionary.Choice("Back", value="BACK_TO_MENU"))
             
             selection = questionary.select("Select from Library:", choices=choices).ask()
-            if not selection:
+            if not selection or selection == "BACK_TO_MENU":
+                continue
+                
+            if not isinstance(selection, tuple):
                 continue
                 
             mid, data = selection
