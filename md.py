@@ -135,7 +135,31 @@ def get_anilist_chinese_title(query: str) -> Optional[str]:
         pass
     return None
 
-def get_anilist_english_title(chinese_title: str) -> Optional[str]:
+def get_mangaupdates_title(query: str) -> Optional[str]:
+    # Try MangaUpdates API
+    url = "https://api.mangaupdates.com/v1/series/search"
+    payload = {
+        "search": query,
+        "page": 1,
+        "perpage": 1
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            results = data.get("results", [])
+            if results:
+                # The 'record' contains the main title
+                rec = results[0].get("record", {})
+                title = rec.get("title")
+                if title:
+                    return title
+    except:
+        pass
+    return None
+
+def get_english_title(chinese_title: str) -> Optional[str]:
+    # 1. Try AniList first
     url = 'https://graphql.anilist.co'
     query_graphql = '''
     query ($search: String) {
@@ -154,10 +178,13 @@ def get_anilist_english_title(chinese_title: str) -> Optional[str]:
             data = r.json()
             media = data.get('data', {}).get('Media')
             if media:
-                return media.get('title', {}).get('english') or media.get('title', {}).get('romaji')
+                eng = media.get('title', {}).get('english') or media.get('title', {}).get('romaji')
+                if eng: return eng
     except:
         pass
-    return None
+
+    # 2. Try MangaUpdates fallback
+    return get_mangaupdates_title(chinese_title)
 
 def search_baozimh(query: str) -> List[dict]:
     # Try direct URL
@@ -174,7 +201,7 @@ def search_baozimh(query: str) -> List[dict]:
                 title = title_tag.get_text(strip=True) if title_tag else manga_id
                 
                 # Try to get English title for direct URL too
-                eng = get_anilist_english_title(title)
+                eng = get_english_title(title)
                 if eng:
                     title = f"{eng} ({title})"
                 
@@ -237,7 +264,7 @@ def search_baozimh(query: str) -> List[dict]:
             title_text = title_tag.get_text(strip=True) if title_tag else "Unknown"
             
             # Try to fetch English title
-            eng_title = get_anilist_english_title(title_text)
+            eng_title = get_english_title(title_text)
             display_title = f"{eng_title} ({title_text})" if eng_title else title_text
             
             tags_div = card.find("div", class_="tags")
@@ -791,14 +818,18 @@ def main():
                 current_title = data.get('title', '')
                 # Simple check: if no english letters/parentheses, probably just Chinese
                 # Or just always try if no parens
-                if current_title and "(" not in current_title:
+                if not current_title or (current_title and "(" not in current_title):
                     console.print("[cyan]Checking for English title...[/cyan]")
-                    eng = get_anilist_english_title(current_title)
+                    eng = get_english_title(current_title)
                     if eng:
                         new_title = f"{eng} ({current_title})"
                         data['title'] = new_title
                         needs_update = True
                         console.print(f"[green]Updated title: {new_title}[/green]")
+                    elif not current_title:
+                        # Fallback if we have no title at all
+                        data['title'] = "Unknown Title"
+                        needs_update = True
 
             if needs_update:
                 lib[mid] = data
