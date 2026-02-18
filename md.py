@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import requests
 import questionary
+from bs4 import BeautifulSoup
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -27,6 +28,7 @@ from tqdm import tqdm
 from PIL import Image as PILImage
 
 API = "https://api.mangadex.org"
+BAOZIMH_BASE = "https://www.baozimh.com"
 console = Console()
 
 class TerminalImage:
@@ -67,9 +69,16 @@ def fetch_cover_image(manga_id: str, filename: str) -> Optional[PILImage.Image]:
     cache_key = f"{manga_id}/{filename}"
     if cache_key in COVER_CACHE:
         return COVER_CACHE[cache_key]
-    url = get_cover_url(manga_id, filename, size=256)
+    
+    # If filename is a full URL (Baozimh), use it directly
+    if filename.startswith("http"):
+        url = filename
+    else:
+        url = get_cover_url(manga_id, filename, size=256)
+        
     try:
         r = requests.get(url, timeout=5)
+
         r.raise_for_status()
         img = PILImage.open(io.BytesIO(r.content))
         COVER_CACHE[cache_key] = img
@@ -82,6 +91,192 @@ def api_get(path: str, params: dict | None = None) -> dict:
     r = requests.get(url, params=params, timeout=30)
     r.raise_for_status()
     return r.json()
+
+# --- Baozimh Support ---
+def fetch_baozimh_response(url: str):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        return r
+    except:
+        return None
+
+def fetch_baozimh_html(url: str) -> Optional[str]:
+    r = fetch_baozimh_response(url)
+    return r.text if r else None
+
+def get_anilist_chinese_title(query: str) -> Optional[str]:
+    url = 'https://graphql.anilist.co'
+    query_graphql = '''
+    query ($search: String) {
+      Media (search: $search, type: MANGA) {
+        title {
+          native
+        }
+        countryOfOrigin
+      }
+    }
+    '''
+    variables = {'search': query}
+    try:
+        r = requests.post(url, json={'query': query_graphql, 'variables': variables}, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            media = data.get('data', {}).get('Media')
+            if media:
+                native = media.get('title', {}).get('native')
+                return native
+    except:
+        pass
+    return None
+
+def search_baozimh(query: str) -> List[dict]:
+    # Try direct URL
+    if "baozimh.com" in query:
+        # e.g. https://www.baozimh.com/comic/some-id
+        # We can just return a fake result that points to this ID
+        path = query.split("baozimh.com")[-1]
+        return [{
+            "id": path,
+            "title": "Direct URL Match",
+            "status": "Unknown",
+            "description": "Direct URL",
+            "cover_filename": "",
+            "matched": True,
+            "all_candidates": [],
+            "available_languages": ["zh"]
+        }]
+
+    # Try AniList bridge
+    alt_query = get_anilist_chinese_title(query)
+    search_q = alt_query if alt_query else query
+    
+    url = f"{BAOZIMH_BASE}/search?q={search_q}"
+    html = fetch_baozimh_html(url)
+    if not html: return []
+    
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    
+    # Comics are usually in div.comics-card
+    for card in soup.find_all("div", class_="comics-card"):
+        try:
+            a_tag = card.find("a", class_="comics-card__poster")
+            if not a_tag: continue
+            href = a_tag.get("href")
+            
+            img_tag = a_tag.find("amp-img")
+            cover_url = img_tag.get("src") if img_tag else ""
+            
+            title_tag = card.find("h3", class_="comics-card__title")
+            title_text = title_tag.get_text(strip=True) if title_tag else "Unknown"
+            
+            tags_div = card.find("div", class_="tags")
+            status_text = tags_div.get_text(strip=True) if tags_div else ""
+            
+            results.append({
+                "id": href,
+                "title": title_text,
+                "status": status_text,
+                "description": "No description available (Baozimh)",
+                "cover_filename": cover_url, # Use full URL
+                "matched": True,
+                "all_candidates": [title_text],
+                "available_languages": ["zh"]
+            })
+        except:
+            continue
+            
+    return results
+
+def fetch_chapters_baozimh(manga_path: str) -> List[dict]:
+    url = f"{BAOZIMH_BASE}{manga_path}"
+    html = fetch_baozimh_html(url)
+    if not html: return []
+    
+    soup = BeautifulSoup(html, "html.parser")
+    chapters = []
+    
+    # Section: comics-chapters
+    # Each chapter is usually a link in a list
+    # The layout varies, often id="chapters_box" or class="comics-chapters"
+    
+    seen_ids = set()
+    
+    # Try finding all chapter links
+    # Typically: <a href="/comic/chapter/..." class="comics-chapters__item">
+    links = soup.select(".comics-chapters .comics-chapters__item")
+    if not links:
+        # Fallback selector
+        links = soup.select("div#chapters_box a")
+        
+    for link in links:
+        href = link.get("href")
+        if not href or href in seen_ids: continue
+        seen_ids.add(href)
+        
+        text = link.get_text(strip=True)
+        # Try to extract date if present in parent or nearby
+        # Often date is not easily available in list, or is inside a span
+        
+        chapters.append({
+            "id": href, # The relative URL is the ID
+            "chapter": text, # Use the text as chapter number/title
+            "title": text,
+            "volume": "",
+            "language": "zh",
+            "publishAt": "",
+            "groups": [],
+            "attributes": {}
+        })
+    
+    # Baozimh lists newest first usually, but let's not assume sort
+    return chapters
+
+def get_baozimh_images(chapter_url_path: str) -> List[str]:
+    # If path starts with /, prepend base
+    if chapter_url_path.startswith("/"):
+        base_url = f"{BAOZIMH_BASE}{chapter_url_path}"
+    else:
+        base_url = chapter_url_path
+        
+    r = fetch_baozimh_response(base_url)
+    if not r: return []
+    
+    soup = BeautifulSoup(r.text, "html.parser")
+    images = []
+    seen = set()
+    
+    # --- Refined Image Selection Strategy ---
+    # 1. Primary: Look for images with class 'comic-contain__item'.
+    targets = soup.select(".comic-contain__item")
+    
+    # 2. Fallback: If no specific items found, look inside the 'comic-contain' container.
+    if not targets:
+        container = soup.select_one(".comic-contain")
+        if container:
+            targets = container.select("amp-img, img")
+            
+    # 3. Last Resort: Find all amp-img but exclude known non-chapter containers
+    if not targets:
+        for img in soup.find_all("amp-img"):
+            if img.find_parent(class_="recommend--item"):
+                continue
+            targets.append(img)
+
+    # Extract URLs from targets
+    for img in targets:
+        src = img.get("src") or img.get("data-src")
+        if src and src not in seen:
+            images.append(src)
+            seen.add(src)
+            
+    return images
+
+# --- End Baozimh Support ---
 
 def _normalize_text(s: Optional[str]) -> str:
     if not s:
@@ -238,7 +433,12 @@ def render_cover_to_terminal(manga_id: str, filename: str):
     if not filename:
         console.print("[yellow]No cover available for this manga.[/yellow]")
         return
-    url = get_cover_url(manga_id, filename, size=256)
+    
+    if filename.startswith("http"):
+        url = filename
+    else:
+        url = get_cover_url(manga_id, filename, size=256)
+        
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
@@ -435,77 +635,120 @@ def main():
         os.system('mode con: cols=150 lines=45')
     os.system('cls' if os.name == 'nt' else 'clear')
     console.print("[bold green]MangaDex TUI — Grid Layout Mode[/bold green]")
+    
+    # Track current source
+    current_source = "MangaDex"
+    
     while True:
-        action = questionary.select("Choose action", choices=["Search manga", "Exit"]).ask()
+        action = questionary.select(
+            f"Choose action (Current: {current_source})", 
+            choices=["Search manga", "Change Source", "Exit"]
+        ).ask()
+        
         if action == "Exit" or action is None:
             console.print("Goodbye.")
             sys.exit(0)
+            
+        if action == "Change Source":
+            new_source = questionary.select(
+                "Select Source",
+                choices=["MangaDex", "Baozimh"]
+            ).ask()
+            if new_source:
+                current_source = new_source
+            continue
+            
+        # Search manga
         query = questionary.text("Enter manga title to search:").ask()
         if not query:
             continue
         os.system('cls' if os.name == 'nt' else 'clear')
-        console.print(f"Searching for: [bold]{query}[/bold] ...")
+        console.print(f"Searching for: [bold]{query}[/bold] on {current_source} ...")
+        
         try:
-            results = search_manga(query, limit=40)
+            if current_source == "MangaDex":
+                results = search_manga(query, limit=40)
+            else:
+                results = search_baozimh(query)
         except Exception as e:
             console.print(f"[red]Search failed: {e}[/red]")
             continue
+            
         if not results:
             console.print("[yellow]No results.[/yellow]")
             continue
+            
         selected = custom_manga_selector(results)
         if not selected:
             continue
+            
         os.system('cls' if os.name == 'nt' else 'clear')
         console.print(Panel(f"Selected: [bold cyan]{selected['title']}[/bold cyan]", expand=False))
         is_correct = questionary.confirm("Proceed with this manga?", default=True).ask()
         if not is_correct:
             continue
+            
         manga_id = selected["id"]
         console.print(f"Confirmed: [cyan]{selected['title']}[/cyan]")
         
-        available_langs = sorted([str(l) for l in selected.get("available_languages", []) if l])
-        if not available_langs:
-            console.print("[yellow]No translated chapters found for this manga according to MangaDex.[/yellow]")
-            is_continue = questionary.confirm("Try fetching chapters anyway?", default=False).ask()
-            if not is_continue:
-                continue
-            selected_langs = None
+        # --- Language Selection (MangaDex Only) ---
+        selected_langs = None
+        if current_source == "MangaDex":
+            available_langs = sorted([str(l) for l in selected.get("available_languages", []) if l])
+            if not available_langs:
+                console.print("[yellow]No translated chapters found for this manga according to MangaDex.[/yellow]")
+                is_continue = questionary.confirm("Try fetching chapters anyway?", default=False).ask()
+                if not is_continue:
+                    continue
+            else:
+                selected_langs = questionary.checkbox(
+                    "Select languages for chapters (leave empty for all available):",
+                    choices=available_langs
+                ).ask()
         else:
-            selected_langs = questionary.checkbox(
-                "Select languages for chapters (leave empty for all available):",
-                choices=available_langs
-            ).ask()
+            # Baozimh is Chinese only
+            console.print("[dim]Source is Baozimh (Chinese only)[/dim]")
         
         lang_params = selected_langs if selected_langs else None
         console.print("Fetching chapters (this may take a moment for large series)...")
+        
         try:
-            chapters = fetch_chapters_for_manga(manga_id, langs=lang_params)
+            if current_source == "MangaDex":
+                chapters = fetch_chapters_for_manga(manga_id, langs=lang_params)
+            else:
+                chapters = fetch_chapters_baozimh(manga_id)
         except Exception as e:
             console.print(f"[red]Failed to fetch chapters: {e}[/red]")
             chapters = []
+            
         if not chapters:
             console.print("[yellow]No chapters found for selected language / manga.[/yellow]")
             continue
-        all_groups = set()
-        for c in chapters:
-            for g in c.get("groups", []):
-                all_groups.add(g)
+            
+        # --- Group Filtering (MangaDex Only) ---
         filtered_chapters = chapters
-        if all_groups:
-            group_choices = sorted(list(all_groups))
-            selected_groups = questionary.checkbox(
-                "Filter by scanlation groups (leave empty for all):",
-                choices=group_choices
-            ).ask()
-            if selected_groups:
-                filtered_chapters = [
-                    c for c in chapters 
-                    if any(g in selected_groups for g in c.get("groups", []))
-                ]
+        if current_source == "MangaDex":
+            all_groups = set()
+            for c in chapters:
+                for g in c.get("groups", []):
+                    all_groups.add(g)
+            
+            if all_groups:
+                group_choices = sorted(list(all_groups))
+                selected_groups = questionary.checkbox(
+                    "Filter by scanlation groups (leave empty for all):",
+                    choices=group_choices
+                ).ask()
+                if selected_groups:
+                    filtered_chapters = [
+                        c for c in chapters 
+                        if any(g in selected_groups for g in c.get("groups", []))
+                    ]
+        
         if not filtered_chapters:
-            console.print("[yellow]No chapters left after group filtering.[/yellow]")
+            console.print("[yellow]No chapters left after filtering.[/yellow]")
             continue
+            
         def chap_key(c):
             val = c.get("chapter")
             if not val: return 999999.0
@@ -514,7 +757,10 @@ def main():
             except ValueError:
                 match = re.search(r"(\d+(\.\d+)?)", str(val))
                 return float(match.group(1)) if match else 999999.0
+                
+        # Sort chapters
         filtered_chapters.sort(key=chap_key)
+        
         # Ask user for selection method
         selection_method = questionary.select(
             "How do you want to select chapters?",
@@ -535,8 +781,6 @@ def main():
                     if "-" in part:
                         try:
                             start, end = map(float, part.split("-"))
-                            # Add all chapters in range (inclusive)
-                            # We need to iterate through filtered_chapters to find matches
                             for c in filtered_chapters:
                                 try:
                                     c_val = float(c.get("chapter") or 0)
@@ -569,27 +813,38 @@ def main():
             lang_code = c.get("language") or ""
             date_str = (c.get("publishAt") or "").split("T")[0]
             groups = ", ".join(c.get("groups") or []) or "-"
-            label = f"c{ch_text} - {title_text[:30]} [vol:{vol or '-'}] [{lang_code}] [{date_str}] [{groups}]"
+            
+            # Clean title for display
+            clean_title = title_text[:30].replace("\n", " ").strip()
+            
+            label = f"c{ch_text} - {clean_title} [vol:{vol or '-'}] [{lang_code}] [{date_str}] [{groups}]"
             is_checked = c["id"] in pre_selected_ids
             chapter_choices.append(questionary.Choice(label, value=c["id"], checked=is_checked))
             chapter_mapping[c["id"]] = c
+            
         console.print("\n[bold yellow]Controls:[/bold yellow]")
         console.print(" - Use [bold]Space[/bold] to mark/unmark a chapter")
         console.print(" - Use [bold]A[/bold] to toggle all")
         console.print(" - Use [bold]I[/bold] to invert selection")
         console.print(" - Press [bold]Enter[/bold] when finished to start download\n")
+        
         selected_chapter_ids = questionary.checkbox(
             "Confirm selection (Space to mark, Enter to confirm):",
             choices=chapter_choices,
             use_shortcuts=True,
             validate=lambda x: True
         ).ask()
+        
         if not selected_chapter_ids:
             console.print("[yellow]No chapters selected. Did you use 'Space' to mark them?[/yellow]")
             time.sleep(2)
             continue
-        use_saver = questionary.confirm("Use data-saver images (smaller)?", default=True).ask()
-        if use_saver is None: continue
+            
+        # Data saver prompt (MangaDex only)
+        use_saver = True
+        if current_source == "MangaDex":
+            use_saver = questionary.confirm("Use data-saver images (smaller)?", default=True).ask()
+            if use_saver is None: continue
         
         make_cbz = questionary.confirm("Save chapters as CBZ files?", default=False).ask()
         
@@ -597,13 +852,17 @@ def main():
         title_map = selected.get('originalTitle') or {}
         en_title = title_map.get('en') or selected.get('title')
         safe_title = "".join([c if c.isalnum() or c in " .-_" else "_" for c in en_title])
+        
         base_out_raw = questionary.text("Output folder name (or full path):", default=safe_title).ask()
         if base_out_raw is None: continue
+        
         entered_path = Path(base_out_raw.strip() if base_out_raw.strip() else safe_title)
         if not entered_path.is_absolute():
             base_out_path = cwd / entered_path
         else:
             base_out_path = entered_path
+            
+        # Create sanitized path string
         final_parts = []
         if base_out_path.anchor:
             final_parts.append(base_out_path.anchor)
@@ -611,36 +870,54 @@ def main():
             sanitized_part = "".join([c if c.isalnum() or c in " .-_" else "_" for c in part])
             final_parts.append(sanitized_part)
         base_out = str(Path(*final_parts))
+        
         for chapter_id in selected_chapter_ids:
             chapter_entry = chapter_mapping[chapter_id]
             ch_num = chapter_entry.get('chapter') or '?'
             console.print(f"Processing Chapter {ch_num} (ID: {chapter_id})...")
+            
             try:
-                chap_info = get_chapter_info(chapter_id)
-                athome_resp = get_at_home_base(chapter_id)
-                base = athome_resp.get("baseUrl")
-                athome_chapter = athome_resp.get("chapter", {})
-                attrs = chap_info.get("attributes", {})
-                if not attrs.get("data") and athome_chapter.get("data"):
-                    attrs = athome_chapter
-                image_urls = craft_image_urls(base, attrs, use_data_saver=use_saver)
+                image_urls = []
+                
+                if current_source == "MangaDex":
+                    chap_info = get_chapter_info(chapter_id)
+                    athome_resp = get_at_home_base(chapter_id)
+                    base = athome_resp.get("baseUrl")
+                    athome_chapter = athome_resp.get("chapter", {})
+                    attrs = chap_info.get("attributes", {})
+                    if not attrs.get("data") and athome_chapter.get("data"):
+                        attrs = athome_chapter
+                    image_urls = craft_image_urls(base, attrs, use_data_saver=use_saver)
+                else:
+                    # Baozimh
+                    image_urls = get_baozimh_images(chapter_id)
+
                 if not image_urls:
                     console.print(f"[red]No image URLs found for chapter {ch_num}.[/red]")
                     continue
-                out_dir = Path(base_out) / f"chapter_{ch_num}_{chapter_id[:8]}"
+                    
+                # Sanitize folder name
+                safe_ch_id = "".join([c if c.isalnum() else "_" for c in str(chapter_id)])
+                out_dir = Path(base_out) / f"chapter_{ch_num}_{safe_ch_id[:8]}"
+                
                 download_images(image_urls, str(out_dir))
+                
                 meta_path = out_dir / "metadata.json"
                 meta = {
                     "manga": selected,
                     "chapter_upload": chapter_entry,
                     "downloaded_at": int(time.time()),
-                    "quality": "data-saver" if use_saver else "data"
+                    "quality": "data-saver" if use_saver else "data",
+                    "source": current_source
                 }
-                with open(meta_path, "w", encoding="utf-8") as fh:
-                    json.dump(meta, fh, indent=2, ensure_ascii=False)
+                try:
+                    with open(meta_path, "w", encoding="utf-8") as fh:
+                        json.dump(meta, fh, indent=2, ensure_ascii=False)
+                except:
+                    pass
                 
                 if make_cbz:
-                    cbz_path = Path(base_out) / f"chapter_{ch_num}_{chapter_id[:8]}.cbz"
+                    cbz_path = Path(base_out) / f"chapter_{ch_num}_{safe_ch_id[:8]}.cbz"
                     console.print(f"Archiving to {cbz_path.name}...")
                     with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_DEFLATED) as zf:
                         for item in out_dir.glob("*"):
@@ -653,6 +930,7 @@ def main():
 
             except Exception as e:
                 console.print(f"[red]Error downloading chapter {ch_num}: {e}[/red]")
+                
         if not make_cbz:
             share_now = questionary.confirm("Make ZIP of downloaded folder?", default=False).ask()
             if share_now:
