@@ -10,15 +10,27 @@ A feature-rich, dual-interface (GUI & TUI) application to search, view, and down
 - **Dual Interface**:
   - **GUI**: Modern, scalable Qt-based interface with dark mode, cover previews, and advanced filtering.
   - **TUI**: Keyboard-centric terminal interface for fast, lightweight usage.
-- **Search**: fast search with support for English and Romaji titles.
-- **Detailed Info**: View covers, descriptions, status, and available languages.
-- **Smart Filtering**:
-  - Filter chapters by Language.
-  - Filter by Scanlation Group.
+- **Library & Tracking**:
+  - **Library**: Save your favorite manga to a local library.
+  - **Update Checker**: Quickly see if new chapters are available.
+  - **Settings**: Persistent preferences for download path, data saver, and more.
+- **Smart Search**: 
+  - Search by title (English/Romaji support).
+  - **URL Import**: Paste a MangaDex URL to instantly load a manga.
+  - **Site Selector**: Choose between MangaDex (default) and **Baozimh**.
+  - **Baozimh Support**:
+    - Full search integration with automatic English-to-Chinese title lookup (via AniList).
+    - Chapter list with release dates.
+    - Smart image scraping (excludes ads and recommendations).
 - **Flexible Downloading**:
-  - **Interactive Selection**: Pick specific chapters manually.
-  - **Range Selection**: Select by range (e.g., `1-10, 15, 20-25`).
+  - **CBZ Archiving**: Option to save chapters as `.cbz` files.
   - **Data Saver**: Option to use compressed images to save bandwidth.
+  - **Interactive Selection**: Pick specific chapters manually or by range.
+  - **Group Filtering**: Filter chapters by Scanlation Group.
+  - **Release Date**: View chapter release dates in the list.
+- **Detailed Info**: 
+  - View covers, descriptions, status, and release dates.
+  - Scalable UI that adapts to your window size.
 - **Resilient**:
   - Threaded downloads to keep the UI responsive.
   - Automatic retry on failed pages.

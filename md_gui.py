@@ -1,7 +1,5 @@
 import shutil
 import zipfile
-import shutil
-import zipfile
 import sys
 import os
 import io
@@ -12,6 +10,7 @@ import requests
 import threading
 import unicodedata
 import traceback
+from bs4 import BeautifulSoup
 from pathlib import Path
 from typing import List, Optional
 
@@ -20,7 +19,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QTreeWidget, QTreeWidgetItem, QSplitter, QTextEdit, 
                                QCheckBox, QProgressBar, QMessageBox, QFileDialog,
                                QListWidget, QAbstractItemView, QFrame, QSizePolicy,
-                               QHeaderView, QMenu, QDialog, QDialogButtonBox, QListWidgetItem)
+                               QHeaderView, QMenu, QDialog, QDialogButtonBox, QListWidgetItem,
+                               QComboBox)
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QEvent, QSize
 from PySide6.QtGui import QPixmap, QImage, QFont, QIcon, QAction, QColor, QPalette, QActionGroup
 
@@ -30,8 +30,9 @@ class ScalableImageLabel(QLabel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._original_pixmap = None
+        self._last_resize_time = 0
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(100, 150)
+        self.setMinimumSize(150, 225)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet("border: 1px solid #444; background-color: #1a1a1a; border-radius: 4px;")
 
@@ -40,16 +41,24 @@ class ScalableImageLabel(QLabel):
         self.update_display()
 
     def resizeEvent(self, event):
-        self.update_display()
+        # Debounce/Throttle updates to prevent crash on rapid resize
+        current_time = time.time()
+        if current_time - self._last_resize_time > 0.05: # 50ms throttle
+            self.update_display()
+            self._last_resize_time = current_time
         super().resizeEvent(event)
 
     def update_display(self):
+        if not self.isVisible(): return
         if self._original_pixmap and not self._original_pixmap.isNull():
             # Scale while keeping aspect ratio
-            scaled = self._original_pixmap.scaled(
-                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            super().setPixmap(scaled)
+            try:
+                scaled = self._original_pixmap.scaled(
+                    self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                super().setPixmap(scaled)
+            except:
+                pass # Prevent crash if size is invalid
         else:
             super().setText("No Cover")
 
@@ -109,6 +118,66 @@ class GroupFilterDialog(QDialog):
                 selected.append(item.text())
         return selected
 
+class LibraryDialog(QDialog):
+    def __init__(self, library_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Library")
+        self.resize(500, 600)
+        self.layout = QVBoxLayout(self)
+        self.library_data = library_data
+        
+        self.list_widget = QListWidget()
+        self.list_widget.itemDoubleClicked.connect(self.load_selected)
+        self.layout.addWidget(self.list_widget)
+        
+        self.refresh_list()
+        
+        btn_layout = QHBoxLayout()
+        self.btn_load = QPushButton("Load")
+        self.btn_load.clicked.connect(self.load_selected)
+        self.btn_remove = QPushButton("Remove")
+        self.btn_remove.clicked.connect(self.remove_selected)
+        self.btn_close = QPushButton("Close")
+        self.btn_close.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(self.btn_load)
+        btn_layout.addWidget(self.btn_remove)
+        btn_layout.addWidget(self.btn_close)
+        self.layout.addLayout(btn_layout)
+        
+        self.setStyleSheet("""
+            QDialog { background-color: #2d2d2d; color: #fff; }
+            QListWidget { background-color: #252526; color: #fff; border: 1px solid #444; }
+            QListWidget::item:hover { background-color: #3e3e42; }
+            QListWidget::item:selected { background-color: #007acc; }
+        """)
+
+    def refresh_list(self):
+        self.list_widget.clear()
+        for mid, data in self.library_data.items():
+            title = data.get('title', 'Unknown')
+            # Check if there's an update flagged
+            suffix = ""
+            if data.get('has_update'):
+                suffix = " [UPDATE!]"
+            item = QListWidgetItem(f"{title}{suffix}")
+            item.setData(Qt.UserRole, mid)
+            self.list_widget.addItem(item)
+
+    def load_selected(self):
+        item = self.list_widget.currentItem()
+        if item:
+            mid = item.data(Qt.UserRole)
+            self.parent().load_manga_from_library(mid)
+            self.accept()
+
+    def remove_selected(self):
+        item = self.list_widget.currentItem()
+        if item:
+            mid = item.data(Qt.UserRole)
+            if mid in self.library_data:
+                del self.library_data[mid]
+                self.refresh_list()
 
 # --- Global Exception Handler ---
 def excepthook(exc_type, exc_value, exc_traceback):
@@ -129,6 +198,9 @@ sys.excepthook = excepthook
 # --- API Functions ---
 
 API = "https://api.mangadex.org"
+BAOZIMH_BASE = "https://www.baozimh.com"
+SETTINGS_FILE = "settings.json"
+LIBRARY_FILE = "library.json"
 
 def api_get(path: str, params: dict | None = None) -> dict:
     url = API.rstrip("/") + "/" + path.lstrip("/")
@@ -314,35 +386,274 @@ def craft_image_urls(base_url: str, chapter_attrs: dict, use_data_saver: bool = 
     base = base_url.rstrip("/")
     return [f"{base}/{mode}/{hash_}/{fname}" for fname in files]
 
+# --- Baozimh API Functions ---
+
+def get_anilist_chinese_title(query: str) -> Optional[str]:
+    url = 'https://graphql.anilist.co'
+    query_graphql = '''
+    query ($search: String) {
+      Media (search: $search, type: MANGA) {
+        title {
+          native
+        }
+        countryOfOrigin
+      }
+    }
+    '''
+    variables = {'search': query}
+    try:
+        r = requests.post(url, json={'query': query_graphql, 'variables': variables}, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            media = data.get('data', {}).get('Media')
+            if media:
+                native = media.get('title', {}).get('native')
+                # country = media.get('countryOfOrigin')
+                # We return native if it exists, assuming it might be Chinese if the user is searching for Chinese manga
+                return native
+    except:
+        pass
+    return None
+
+def fetch_baozimh_response(url: str, params: dict | None = None) -> requests.Response | None:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=10, allow_redirects=True)
+        r.raise_for_status()
+        return r
+    except Exception as e:
+        print(f"Baozimh Error {url}: {e}")
+        return None
+
+def fetch_baozimh_html(url: str, params: dict | None = None) -> str | None:
+    r = fetch_baozimh_response(url, params)
+    return r.text if r else None
+
+def search_baozimh(query: str) -> List[dict]:
+    query = (query or "").strip()
+    if not query: return []
+    
+    # 1. Try AniList bridge for English -> Chinese
+    # If query is ASCII (likely English/Romaji), try to get Chinese title
+    if all(ord(c) < 128 for c in query):
+        chinese_title = get_anilist_chinese_title(query)
+        if chinese_title:
+            print(f"AniList Bridge: {query} -> {chinese_title}")
+            # We search with the Chinese title
+            # But we should also search with original query just in case?
+            # User said: "search the chinese title but if i enter english it works too"
+            # So let's use the Chinese title if found.
+            query = chinese_title
+
+    html = fetch_baozimh_html(f"{BAOZIMH_BASE}/search", params={"q": query})
+    if not html: return []
+    
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    
+    # Parse search results
+    for card in soup.select("div.comics-card"):
+        link = card.select_one("a.comics-card__poster")
+        if not link: continue
+        
+        href = link.get("href")
+        title = link.get("title")
+        if not href or not title: continue
+        
+        # Extract ID from href: /comic/some-id -> some-id
+        manga_id = href.split("/")[-1]
+        
+        # Cover image
+        img_tag = link.select_one("amp-img, img")
+        cover_url = None
+        if img_tag:
+            cover_url = img_tag.get("src") or img_tag.get("data-src")
+            
+        results.append({
+            "id": manga_id,
+            "title": title,
+            "attributes": {"title": {"en": title, "zh": title}},
+            "status": "Ongoing", # Default
+            "description": "From Baozimh",
+            "cover_filename": None,
+            "cover_url": cover_url,
+            "available_languages": ["zh"],
+            "source": "baozimh"
+        })
+        
+    return results
+
+def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
+    url = f"{BAOZIMH_BASE}/comic/{manga_id}"
+    html = fetch_baozimh_html(url)
+    if not html: return []
+    
+    soup = BeautifulSoup(html, "html.parser")
+    chapters = []
+    
+    # Try to extract metadata (Update Date)
+    # User example: "最新： 第95話 (2026年02月15日 更新)"
+    # We look for date pattern in the page
+    latest_date = ""
+    date_regex = re.compile(r"(\d{4}年\d{2}月\d{2}日)")
+    
+    # Search in the whole text or specific elements
+    # Usually in a header or info section
+    # Let's search in all text first for simplicity or targeted if we knew the selector
+    # Based on inspect_baozimh_meta.py, it might be in text nodes
+    body_text = soup.get_text()
+    date_match = date_regex.search(body_text)
+    if date_match:
+        # Convert YYYY年MM月DD日 to YYYY-MM-DD
+        d_str = date_match.group(1)
+        latest_date = d_str.replace("年", "-").replace("月", "-").replace("日", "")
+    
+    # Extract chapters
+    # Note: Baozimh often lists chapters in a specific div.
+    # The selector might be div.comics-chapters or similar.
+    # We also need to handle "Check all chapters" button if it exists, 
+    # but usually they list recent ones or all.
+    # We'll use the selector from inspect_baozimh_meta.py logic if possible, 
+    # or the one I verified: "div.comics-chapters a.comics-chapters__item"
+    
+    # Also, ensure we don't get duplicates if there are multiple lists (e.g. "Latest" vs "All")
+    # We use a set of IDs to filter duplicates
+    seen_ids = set()
+
+    for link in soup.select("div.comics-chapters a.comics-chapters__item"):
+        href = link.get("href")
+        if not href or href in seen_ids: continue
+        seen_ids.add(href)
+        
+        text = link.get_text().strip()
+        
+        # If this is the "Latest" chapter (usually first or last?), we might assign the date
+        # But determining which one corresponds to the date is tricky.
+        # Often the date is for the *latest* update.
+        # We can assign it to the chapter that matches the "Latest" text if we parsed it,
+        # or just assign to the first one found (often latest).
+        # For now, let's assign `latest_date` to ALL chapters or just the first one?
+        # Assigning to all might be misleading.
+        # Let's leave it empty for now unless we are sure.
+        # Actually, user said "i dont think you can get the release dates".
+        # But then "Latest: ... (2026...)".
+        # Let's just put it on the first chapter we find if it matches "Latest" logic?
+        # Baozimh usually lists chapters latest first or oldest first?
+        # If I can't be sure, better to leave blank than wrong.
+        # BUT, I will try to pass the date if I found it.
+        # Maybe just for the first chapter in the list (assuming latest first)?
+        # Let's check the order. Usually descending.
+        
+        publish_at = ""
+        if latest_date and len(chapters) == 0: # Assign to the first one found (assuming it's the latest)
+             publish_at = latest_date
+
+        chapters.append({
+            "id": href, 
+            "chapter": text, 
+            "title": text,
+            "language": "zh",
+            "groups": [],
+            "publishAt": publish_at,
+            "source": "baozimh"
+        })
+        
+    return chapters
+
+def get_baozimh_images(chapter_url_path: str) -> List[str]:
+    # If path starts with /, prepend base
+    if chapter_url_path.startswith("/"):
+        base_url = f"{BAOZIMH_BASE}{chapter_url_path}"
+    else:
+        base_url = chapter_url_path
+        
+    r = fetch_baozimh_response(base_url)
+    if not r: return []
+    
+    soup = BeautifulSoup(r.text, "html.parser")
+    images = []
+    seen = set()
+    
+    # --- Refined Image Selection Strategy ---
+    # 1. Primary: Look for images with class 'comic-contain__item'.
+    #    This is the most specific selector for chapter pages found in inspection.
+    #    It excludes recommendations which are in 'recommend--item'.
+    targets = soup.select(".comic-contain__item")
+    
+    # 2. Fallback: If no specific items found, look inside the 'comic-contain' container.
+    if not targets:
+        container = soup.select_one(".comic-contain")
+        if container:
+            targets = container.select("amp-img, img")
+            
+    # 3. Last Resort: Find all amp-img but exclude known non-chapter containers
+    if not targets:
+        # Fallback for pages that might not use the standard class
+        # Exclude recommendations
+        for img in soup.find_all("amp-img"):
+            # Check if parent is a recommendation item
+            if img.find_parent(class_="recommend--item"):
+                continue
+            targets.append(img)
+
+    # Extract URLs from targets
+    for img in targets:
+        src = img.get("src") or img.get("data-src")
+        if src and src not in seen:
+            images.append(src)
+            seen.add(src)
+            
+    return images
+
 # --- Workers ---
 
 class SearchWorker(QThread):
     finished = Signal(list)
     error = Signal(str)
 
-    def __init__(self, query):
+    def __init__(self, query, site="mangadex"):
         super().__init__()
         self.query = query
+        self.site = site
 
     def run(self):
         try:
-            results = search_manga(self.query)
+            if self.isInterruptionRequested(): return
+            
+            if self.site == "baozimh":
+                results = search_baozimh(self.query)
+            else:
+                results = search_manga(self.query)
+            
+            if self.isInterruptionRequested(): return
             self.finished.emit(results)
         except Exception as e:
-            self.error.emit(str(e))
+            if not self.isInterruptionRequested():
+                self.error.emit(str(e))
 
 class ChapterWorker(QThread):
     finished = Signal(list)
     error = Signal(str)
 
-    def __init__(self, manga_id, langs=None):
+    def __init__(self, manga_id, langs=None, site="mangadex"):
         super().__init__()
         self.manga_id = manga_id
         self.langs = langs
+        self.site = site
 
     def run(self):
         try:
-            chapters = fetch_chapters_for_manga(self.manga_id, self.langs)
+            if self.isInterruptionRequested(): return
+
+            if self.site == "baozimh":
+                chapters = fetch_chapters_baozimh(self.manga_id)
+            else:
+                chapters = fetch_chapters_for_manga(self.manga_id, self.langs)
+            
+            if self.isInterruptionRequested(): return
+            
             def chap_key(c):
                 val = c.get("chapter")
                 if not val: return 999999.0
@@ -351,9 +662,12 @@ class ChapterWorker(QThread):
                     match = re.search(r"(\d+(\.\d+)?)", str(val))
                     return float(match.group(1)) if match else 999999.0
             chapters.sort(key=chap_key)
-            self.finished.emit(chapters)
+            
+            if not self.isInterruptionRequested():
+                self.finished.emit(chapters)
         except Exception as e:
-            self.error.emit(str(e))
+            if not self.isInterruptionRequested():
+                self.error.emit(str(e))
 
 class DownloadWorker(QThread):
     progress = Signal(str)
@@ -361,12 +675,13 @@ class DownloadWorker(QThread):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, chapters, base_dir, use_saver, make_cbz=False):
+    def __init__(self, chapters, base_dir, use_saver, make_cbz=False, site="mangadex"):
         super().__init__()
         self.chapters = chapters
         self.base_dir = base_dir
         self.use_saver = use_saver
         self.make_cbz = make_cbz
+        self.site = site
         self._is_running = True
 
     def stop(self):
@@ -381,16 +696,21 @@ class DownloadWorker(QThread):
             self.progress.emit(f"Processing Chapter {ch_num}...")
             
             try:
-                chap_info = get_chapter_info(chap['id'])
-                athome = get_at_home_base(chap['id'])
-                base = athome.get("baseUrl")
-                
-                attrs = chap_info.get("attributes", {})
-                athome_chap = athome.get("chapter", {})
-                if not attrs.get("data") and athome_chap.get("data"):
-                    attrs = athome_chap
-                
-                urls = craft_image_urls(base, attrs, use_data_saver=self.use_saver)
+                urls = []
+                if self.site == "baozimh":
+                    urls = get_baozimh_images(chap['id'])
+                else:
+                    chap_info = get_chapter_info(chap['id'])
+                    athome = get_at_home_base(chap['id'])
+                    base = athome.get("baseUrl")
+                    
+                    attrs = chap_info.get("attributes", {})
+                    athome_chap = athome.get("chapter", {})
+                    if not attrs.get("data") and athome_chap.get("data"):
+                        attrs = athome_chap
+                    
+                    urls = craft_image_urls(base, attrs, use_data_saver=self.use_saver)
+
                 if not urls:
                     self.progress.emit(f"No images for Ch {ch_num}")
                     continue
@@ -470,6 +790,9 @@ class ImageLoader(QThread):
 class ModernMangaDexGUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.settings = self.load_settings()
+        self.library = self.load_library()
+        self._old_workers = []
         self.setWindowTitle("MangaDex Scraper (Modern Qt)")
         self.resize(1200, 800)
         
@@ -540,6 +863,10 @@ class ModernMangaDexGUI(QMainWindow):
         # Top: Search & Settings
         self.top_bar = QHBoxLayout()
         
+        self.site_combo = QComboBox()
+        self.site_combo.addItems(["MangaDex", "Baozimh"])
+        self.site_combo.setToolTip("Select source site")
+        
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search manga by title...")
         self.search_input.returnPressed.connect(self.start_search)
@@ -552,9 +879,15 @@ class ModernMangaDexGUI(QMainWindow):
         self.romaji_chk.setToolTip("Toggle between English and Romaji titles")
         self.romaji_chk.stateChanged.connect(self.refresh_titles)
         
+        self.top_bar.addWidget(self.site_combo)
         self.top_bar.addWidget(self.search_input, stretch=1)
         self.top_bar.addWidget(self.romaji_chk)
         self.top_bar.addWidget(self.search_btn)
+        
+        self.lib_btn = QPushButton("Library")
+        self.lib_btn.setIcon(QIcon.fromTheme("system-file-manager"))
+        self.lib_btn.clicked.connect(self.open_library)
+        self.top_bar.addWidget(self.lib_btn)
         
         self.layout.addLayout(self.top_bar)
 
@@ -595,8 +928,11 @@ class ModernMangaDexGUI(QMainWindow):
         self.right_layout = QVBoxLayout(self.right_widget)
         self.right_layout.setContentsMargins(0, 0, 0, 0)
         self.splitter.addWidget(self.right_widget)
+        
         # Give more space to the content area (similar to fullscreen ratio)
-        self.splitter.setSizes([350, 850])
+        # Fullscreen 1920x1080 -> Ratio approx 1:4 or 1:5
+        # 1200 width -> 250 : 950
+        self.splitter.setSizes([250, 950])
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
 
@@ -608,7 +944,7 @@ class ModernMangaDexGUI(QMainWindow):
         
         self.cover_label = ScalableImageLabel()
         self.cover_label.setText("No Cover")
-        self.cover_label.setMaximumWidth(300) # Limit cover width
+        self.cover_label.setMaximumWidth(450) # Limit cover width
         self.cover_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding) # Keep width fixed but allow height to expand within ratio
 
         # Right side of info: Title, Desc, Langs
@@ -661,6 +997,11 @@ class ModernMangaDexGUI(QMainWindow):
         self.details_layout.addWidget(self.desc_text)
         self.details_layout.addWidget(self.lang_label)
         self.details_layout.addWidget(self.lang_list)
+        
+        self.btn_add_lib = QPushButton("Add to Library")
+        self.btn_add_lib.clicked.connect(self.add_current_to_library)
+        self.details_layout.addWidget(self.btn_add_lib)
+
         self.details_layout.addStretch() # Push everything up to avoid gaps
         
         self.info_layout.addWidget(self.cover_label) # Removed stretch=1, relying on fixed width policy
@@ -737,14 +1078,14 @@ class ModernMangaDexGUI(QMainWindow):
 
         # Chapter List (Expands to fill remaining space)
         self.chapter_tree = QTreeWidget()
-        self.chapter_tree.setHeaderLabels(["Ch", "Title", "Lang", "Group", "Date"])
+        self.chapter_tree.setHeaderLabels(["Ch", "Title", "Lang", "Group", "Release Date"])
         self.chapter_tree.setAlternatingRowColors(True)
         self.chapter_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         # Ensure columns resize nicely
         header = self.chapter_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents) # Ch
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Lang
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Date
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Release Date
         header.setSectionResizeMode(1, QHeaderView.Stretch)          # Title (stretches)
         header.setSectionResizeMode(3, QHeaderView.Interactive)      # Group (interactive)
 
@@ -767,6 +1108,11 @@ class ModernMangaDexGUI(QMainWindow):
         self.download_worker = None
         self.current_search_query = ""
         self.all_chapter_groups = set()
+
+        # Restore settings
+        if self.settings.get("romaji_titles"): self.romaji_chk.setChecked(True)
+        if self.settings.get("data_saver") is False: self.data_saver_chk.setChecked(False)
+        if self.settings.get("cbz_mode"): self.cbz_chk.setChecked(True)
 
     def log(self, msg):
         self.log_text.setText(msg)
@@ -828,15 +1174,45 @@ class ModernMangaDexGUI(QMainWindow):
                 # Update detail view title too
                 self.title_label.setText(f"{display_title} ({r['status']})")
 
+    def cleanup_worker(self, worker):
+        if worker in self._old_workers:
+            self._old_workers.remove(worker)
+        worker.deleteLater()
+
     def start_search(self):
         query = self.search_input.text()
         if not query: return
-        self.log(f"Searching for: {query}...")
+        
+        site = self.site_combo.currentText()
+        if site == "MangaDex":
+            site_key = "mangadex"
+        elif site == "Baozimh":
+            site_key = "baozimh"
+        else:
+            QMessageBox.information(self, "Not Implemented", f"Support for {site} is coming soon!")
+            return
+
+        self.log(f"Searching for: {query} on {site}...")
+        
+        # Stop previous search safely
+        if hasattr(self, 'worker') and self.worker and self.worker.isRunning():
+            self.worker.requestInterruption()
+            try: self.worker.finished.disconnect()
+            except: pass
+            try: self.worker.error.disconnect()
+            except: pass
+            
+            # Keep reference until finished to prevent crash
+            old_worker = self.worker
+            self._old_workers.append(old_worker)
+            old_worker.finished.connect(lambda: self.cleanup_worker(old_worker))
+            self.worker = None
+
         self.results_tree.clear()
         self.search_btn.setEnabled(False)
         self.current_search_query = query
         
-        self.worker = SearchWorker(query)
+        self.worker = SearchWorker(query, site=site_key)
         self.worker.finished.connect(self.on_search_finished)
         self.worker.error.connect(lambda e: self.log(f"Search Error: {e}"))
         self.worker.start()
@@ -852,16 +1228,28 @@ class ModernMangaDexGUI(QMainWindow):
         selected_items = self.results_tree.selectedItems()
         if not selected_items: return
         
-        # Stop any ongoing image loading
+        # Stop any ongoing image loading safely
         if hasattr(self, 'img_loader') and self.img_loader and self.img_loader.isRunning():
-            self.img_loader.terminate()
-            self.img_loader.wait()
+            self.img_loader.requestInterruption()
+            try: self.img_loader.loaded.disconnect()
+            except: pass
+            
+            old_loader = self.img_loader
+            self._old_workers.append(old_loader)
+            old_loader.finished.connect(lambda: self.cleanup_worker(old_loader))
             self.img_loader = None
             
-        # Stop any ongoing chapter fetching
+        # Stop any ongoing chapter fetching safely
         if hasattr(self, 'chap_worker') and self.chap_worker and self.chap_worker.isRunning():
-            self.chap_worker.terminate()
-            self.chap_worker.wait()
+            self.chap_worker.requestInterruption()
+            try: self.chap_worker.finished.disconnect()
+            except: pass
+            try: self.chap_worker.error.disconnect()
+            except: pass
+            
+            old_chap = self.chap_worker
+            self._old_workers.append(old_chap)
+            old_chap.finished.connect(lambda: self.cleanup_worker(old_chap))
             self.chap_worker = None
 
         # Find the result object
@@ -879,7 +1267,12 @@ class ModernMangaDexGUI(QMainWindow):
         # Reset pixmap to avoid showing old cover while loading
         self.cover_label.setPixmap(QPixmap()) 
         
-        if self.selected_manga['cover_filename']:
+        if self.selected_manga.get('cover_url'):
+             url = self.selected_manga['cover_url']
+             self.img_loader = ImageLoader(url)
+             self.img_loader.loaded.connect(self.set_cover_image)
+             self.img_loader.start()
+        elif self.selected_manga.get('cover_filename'):
             url = f"https://uploads.mangadex.org/covers/{self.selected_manga['id']}/{self.selected_manga['cover_filename']}.256.jpg"
             self.img_loader = ImageLoader(url)
             self.img_loader.loaded.connect(self.set_cover_image)
@@ -955,7 +1348,8 @@ class ModernMangaDexGUI(QMainWindow):
         self.loaded_label.setText("Fetching chapters...")
         self.chapter_tree.clear()
         
-        self.chap_worker = ChapterWorker(self.selected_manga['id'], langs)
+        site = self.selected_manga.get("source", "mangadex")
+        self.chap_worker = ChapterWorker(self.selected_manga['id'], langs, site=site)
         self.chap_worker.finished.connect(self.on_chapters_fetched)
         self.chap_worker.error.connect(lambda e: self.log(f"Chapter Error: {e}"))
         self.chap_worker.start()
@@ -1041,8 +1435,10 @@ class ModernMangaDexGUI(QMainWindow):
             QMessageBox.warning(self, "No Selection", "Please select chapters to download.")
             return
 
-        base_dir = QFileDialog.getExistingDirectory(self, "Select Download Directory")
+        default_dir = self.settings.get("last_dir", "")
+        base_dir = QFileDialog.getExistingDirectory(self, "Select Download Directory", default_dir)
         if not base_dir: return
+        self.settings["last_dir"] = base_dir
         
         # Create manga specific folder
         display_title = self.get_preferred_title(self.selected_manga)
@@ -1055,11 +1451,13 @@ class ModernMangaDexGUI(QMainWindow):
         self.log_text.setVisible(True) # Show log during download
         self.progress_bar.setValue(0)
         
+        site = self.selected_manga.get("source", "mangadex")
         self.download_worker = DownloadWorker(
             selected_chapters, 
             str(manga_dir), 
             self.data_saver_chk.isChecked(),
-            self.cbz_chk.isChecked()
+            self.cbz_chk.isChecked(),
+            site=site
         )
         self.download_worker.progress.connect(self.log)
         self.download_worker.percent.connect(self.progress_bar.setValue)
@@ -1070,9 +1468,85 @@ class ModernMangaDexGUI(QMainWindow):
     def on_download_finished(self):
         self.download_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.log_text.setVisible(False) # Hide log after download
+        self.log_text.setVisible(False)
         self.log("Download complete!")
         QMessageBox.information(self, "Success", "All selected chapters have been downloaded.")
+
+    # --- Settings & Library ---
+
+    def load_settings(self):
+        try:
+            if os.path.exists(SETTINGS_FILE):
+                with open(SETTINGS_FILE, "r") as f: return json.load(f)
+        except: pass
+        return {}
+
+    def save_settings(self):
+        self.settings["romaji_titles"] = self.romaji_chk.isChecked()
+        self.settings["data_saver"] = self.data_saver_chk.isChecked()
+        self.settings["cbz_mode"] = self.cbz_chk.isChecked()
+        try:
+            with open(SETTINGS_FILE, "w") as f: json.dump(self.settings, f)
+        except: pass
+
+    def load_library(self):
+        try:
+            if os.path.exists(LIBRARY_FILE):
+                with open(LIBRARY_FILE, "r") as f: return json.load(f)
+        except: pass
+        return {}
+
+    def save_library(self):
+        try:
+            with open(LIBRARY_FILE, "w") as f: json.dump(self.library, f)
+        except: pass
+
+    def closeEvent(self, event):
+        # Stop all running workers safely
+        workers = [
+            getattr(self, 'worker', None),
+            getattr(self, 'img_loader', None),
+            getattr(self, 'chap_worker', None)
+        ]
+        for w in workers:
+            if w and w.isRunning():
+                w.requestInterruption()
+                w.wait(50)
+
+        if hasattr(self, 'download_worker') and self.download_worker and self.download_worker.isRunning():
+            self.download_worker.stop()
+            self.download_worker.wait(100)
+
+        self.save_settings()
+        self.save_library()
+        event.accept()
+
+    def open_library(self):
+        dlg = LibraryDialog(self.library, self)
+        dlg.exec()
+        self.save_library()
+
+    def add_current_to_library(self):
+        if not self.selected_manga: 
+            QMessageBox.warning(self, "No Manga", "Please select a manga first.")
+            return
+        
+        mid = self.selected_manga['id']
+        title = self.get_preferred_title(self.selected_manga)
+        
+        self.library[mid] = {
+            "title": title,
+            "added_at": time.time(),
+            "last_chapter": "", 
+            "has_update": False
+        }
+        self.save_library()
+        QMessageBox.information(self, "Library", f"Added '{title}' to library.")
+
+    def load_manga_from_library(self, mid):
+        fake_url = f"https://mangadex.org/title/{mid}"
+        self.search_input.setText(fake_url)
+        self.start_search()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

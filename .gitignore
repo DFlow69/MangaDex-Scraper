@@ -10,3 +10,5 @@ scraep.txt
 .DS_Store
 venv/
 .env
+*.json
+scrapermh.txt

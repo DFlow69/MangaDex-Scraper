@@ -43,9 +43,9 @@ Write-Host "Using $pythonCmd to install libraries..." -ForegroundColor Cyan
 & $pythonCmd -m pip install --upgrade pip --quiet
 
 # Install all requirements
-$libs = @("requests", "questionary", "rich", "prompt_toolkit", "tqdm", "Pillow", "PySide6")
+$libs = @("requests", "questionary", "rich", "prompt_toolkit", "tqdm", "Pillow", "PySide6", "beautifulsoup4")
 Write-Host "Installing dependencies: $($libs -join ', ')..." -ForegroundColor Cyan
-& $pythonCmd -m pip install $libs --quiet
+& $pythonCmd -m pip install $libs
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Installation complete! You can now run the scraper." -ForegroundColor Green
