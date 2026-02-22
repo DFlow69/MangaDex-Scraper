@@ -395,11 +395,15 @@ def get_anilist_chinese_title(query: str) -> Optional[str]:
     url = 'https://graphql.anilist.co'
     query_graphql = '''
     query ($search: String) {
-      Media (search: $search, type: MANGA) {
-        title {
-          native
+      Page(page: 1, perPage: 5) {
+        media(search: $search, type: MANGA, sort: SEARCH_MATCH) {
+          title {
+            romaji
+            english
+            native
+          }
+          synonyms
         }
-        countryOfOrigin
       }
     }
     '''
@@ -408,13 +412,34 @@ def get_anilist_chinese_title(query: str) -> Optional[str]:
         r = requests.post(url, json={'query': query_graphql, 'variables': variables}, timeout=5)
         if r.status_code == 200:
             data = r.json()
-            media = data.get('data', {}).get('Media')
-            if media:
-                native = media.get('title', {}).get('native')
-                                                        
-                                                                                                                        
-                return native
-    except:
+            media_list = data.get('data', {}).get('Page', {}).get('media', [])
+            
+            query_lower = query.lower()
+            
+            for media in media_list:
+                titles = media.get('title', {})
+                native = titles.get('native')
+                if not native:
+                    continue
+                    
+                # Check if query matches any title/synonym
+                candidates = [
+                    titles.get('english'),
+                    titles.get('romaji'),
+                    titles.get('native')
+                ] + (media.get('synonyms') or [])
+                
+                matched = False
+                for cand in candidates:
+                    if cand and query_lower in cand.lower():
+                        matched = True
+                        break
+                
+                if matched:
+                    return native
+                    
+    except Exception as e:
+        print(f"Error: {e}")
         pass
     return None
 
@@ -488,21 +513,41 @@ def search_baozimh(query: str) -> List[dict]:
     
                                                   
                                                                          
+    translated_query = None
     if all(ord(c) < 128 for c in query):
-        chinese_title = get_anilist_chinese_title(query)
-        if chinese_title:
-            print(f"AniList Bridge: {query} -> {chinese_title}")
+        translated_query = get_anilist_chinese_title(query)
+        if translated_query:
+            print(f"AniList Bridge: {query} -> {translated_query}")
                                               
                                                                          
                                                                                        
                                                       
-            query = chinese_title
+            query = translated_query
 
     try:
         search_results = BAOZI_CLIENT.search_comics(query)
     except Exception as e:
         print(f"Error searching baozimh: {e}")
         return []
+
+    # Filter results if we used an AniList translation to be more precise
+    if translated_query and search_results:
+        filtered = []
+        for r in search_results:
+            title_check = r['title']
+            query_check = translated_query
+            if zhconv:
+                try:
+                    title_check = zhconv.convert(title_check, 'zh-cn')
+                    query_check = zhconv.convert(query_check, 'zh-cn')
+                except:
+                    pass
+            
+            if query_check in title_check:
+                filtered.append(r)
+        
+        if filtered:
+            search_results = filtered
 
     results = []
     for r in search_results:
