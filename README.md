@@ -1,6 +1,6 @@
-# MangaDex Scraper & GUI
+# MultiMangaScraper & GUI
 
-A feature-rich, dual-interface (GUI & TUI) application to search, view, and download manga chapters from [MangaDex](https://mangadex.org).
+A feature-rich, dual-interface (GUI & TUI) application to search, view, and download manga chapters from [MangaDex](https://mangadex.org) and [Baozimh](https://www.baozimh.com/).
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
