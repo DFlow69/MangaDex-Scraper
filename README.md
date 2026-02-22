@@ -5,6 +5,9 @@ A feature-rich, dual-interface (GUI & TUI) application to search, view, and down
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 
+## Baozi API Scraping
+- If you want to be able to scrape chapters that are locked on the baozi website use the `experiment-bz` branch.
+
 ## Features
 
 - **Dual Interface**:
