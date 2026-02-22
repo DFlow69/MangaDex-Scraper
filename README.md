@@ -89,6 +89,23 @@ pip install pyinstaller
 pyinstaller --clean --onefile --noconsole --name MultiMangaScraper md_gui.py
 ```
 
+## Troubleshooting
+
+### "Python was not found" Error (Microsoft Store Python)
+If you installed Python from the Microsoft Store and see an error like `Python was not found`, it's likely due to Windows "App Execution Aliases".
+
+**Fix:**
+1. Open Windows Settings.
+2. Search for **"Manage App Execution Aliases"**.
+3. Scroll down to **python.exe** and **python3.exe**.
+4. Toggle them **OFF** and then **ON** (or ensure they are **ON**).
+
+If that doesn't work, try running:
+```bash
+python3 md.py
+```
+or use the provided `run_tui.bat` which attempts to find the correct Python executable automatically.
+
 ## Disclaimer
 
 This tool is for educational purposes and personal use only. Please respect the copyrights of the manga creators and publishers.
