@@ -32,6 +32,8 @@ try:
 except ImportError:
     zhconv = None
 
+from baozimh_client_v2 import BaozimhClient, DownloadEvent
+
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     filename="logs/debug.log",
@@ -43,6 +45,7 @@ logging.basicConfig(
 
 API = "https://api.mangadex.org"
 BAOZIMH_BASE = "https://www.baozimh.com"
+BAOZI_CLIENT = BaozimhClient()
 LIBRARY_FILE = "library.json"
 console = Console()
 
@@ -299,93 +302,58 @@ def search_baozimh(query: str) -> List[dict]:
     alt_query = get_anilist_chinese_title(query)
     search_q = alt_query if alt_query else query
     
-    url = f"{BAOZIMH_BASE}/search?q={search_q}"
-    html = fetch_baozimh_html(url)
-    if not html: return []
+    try:
+        results = BAOZI_CLIENT.search_comics(search_q)
+    except Exception as e:
+        logging.error(f"Error searching baozimh: {e}")
+        return []
     
-    soup = BeautifulSoup(html, "html.parser")
-    results = []
-    
-                                           
-    cards = soup.find_all("div", class_="comics-card")
-    
-                                                 
-    for card in cards[:10]:
-        try:
-            a_tag = card.find("a", class_="comics-card__poster")
-            if not a_tag: continue
-            href = a_tag.get("href")
-                                         
-            manga_id = href.split("/")[-1]
+    mapped_results = []
+    for r in results:
+        manga_id = r['url'].rstrip('/').split("/")[-1]
+        title_text = r['title']
+        cover_url = r.get('cover_url', '')
+        
+        eng_title = get_english_title(title_text)
+        display_title = f"{eng_title} ({title_text})" if eng_title else title_text
+        
+        mapped_results.append({
+            "id": manga_id,
+            "title": display_title,
+            "status": "Unknown",
+            "description": "No description available (Baozimh)",
+            "cover_filename": cover_url,               
+            "matched": True,
+            "all_candidates": [title_text],
+            "available_languages": ["zh"],
+            "source": "baozimh"
+        })
             
-            img_tag = a_tag.find("amp-img")
-            cover_url = img_tag.get("src") if img_tag else ""
-            
-            title_tag = card.find("h3", class_="comics-card__title")
-            title_text = title_tag.get_text(strip=True) if title_tag else "Unknown"
-            
-                                        
-            eng_title = get_english_title(title_text)
-            display_title = f"{eng_title} ({title_text})" if eng_title else title_text
-            
-            tags_div = card.find("div", class_="tags")
-            status_text = tags_div.get_text(strip=True) if tags_div else ""
-            
-            results.append({
-                "id": manga_id,
-                "title": display_title,
-                "status": status_text,
-                "description": "No description available (Baozimh)",
-                "cover_filename": cover_url,               
-                "matched": True,
-                "all_candidates": [title_text],
-                "available_languages": ["zh"],
-                "source": "baozimh"
-            })
-        except Exception as e:
-            logging.error(f"Error: {e}")
-            continue
-            
-    return results
+    return mapped_results
 
 def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
-                                                   
+    logging.debug(f"Fetching chapters for: {manga_id}")
     if manga_id.startswith("/comic/"):
         url = f"{BAOZIMH_BASE}{manga_id}"
     else:
         url = f"{BAOZIMH_BASE}/comic/{manga_id}"
         
-    html = fetch_baozimh_html(url)
-    if not html: return []
+    try:
+        chapters = BAOZI_CLIENT.get_chapter_list(url)
+    except Exception as e:
+        logging.error(f"Error fetching chapters: {e}")
+        return []
     
-    soup = BeautifulSoup(html, "html.parser")
-    chapters = []
-    
-    seen_ids = set()
-    
-                                   
-    links = soup.select(".comics-chapters .comics-chapters__item")
-    if not links:
-                           
-        links = soup.select("div#chapters_box a")
-        
-    for link in links:
-        href = link.get("href")
-        if not href or href in seen_ids: continue
-        seen_ids.add(href)
-        
-                                   
-        text = link.get_text(strip=True)
-        
-                                         
-                                  
-        num_match = re.search(r'\d+', text)
+    mapped_chapters = []
+    for c in chapters:
+        # Chapter number extraction
+        num_match = re.search(r'\d+', c['title'])
         chap_num = num_match.group(0) if num_match else "0"
         
-        chapters.append({
-            "id": href,                             
+        mapped_chapters.append({
+            "id": c['url'],                             
             "chapter": chap_num,                                   
-            "title": text,                     
+            "title": c['title'],                     
             "volume": "",
             "language": "zh",
             "publishAt": "",
@@ -394,47 +362,16 @@ def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
             "source": "baozimh"
         })
     
-    return chapters
+    return mapped_chapters
 
 def get_baozimh_images(chapter_url_path: str) -> List[str]:
-                                         
+    logging.debug(f"Getting images for: {chapter_url_path}")
     if chapter_url_path.startswith("/"):
         base_url = f"{BAOZIMH_BASE}{chapter_url_path}"
     else:
         base_url = chapter_url_path
         
-    r = fetch_baozimh_response(base_url)
-    if not r: return []
-    
-    soup = BeautifulSoup(r.text, "html.parser")
-    images = []
-    seen = set()
-    
-                                              
-                                                                   
-    targets = soup.select(".comic-contain__item")
-    
-                                                                                         
-    if not targets:
-        container = soup.select_one(".comic-contain")
-        if container:
-            targets = container.select("amp-img, img")
-            
-                                                                               
-    if not targets:
-        for img in soup.find_all("amp-img"):
-            if img.find_parent(class_="recommend--item"):
-                continue
-            targets.append(img)
-
-                               
-    for img in targets:
-        src = img.get("src") or img.get("data-src")
-        if src and src not in seen:
-            images.append(src)
-            seen.add(src)
-            
-    return images
+    return BAOZI_CLIENT.get_chapter_images(base_url)
 
                              
 
@@ -1164,9 +1101,11 @@ def main():
             console.print(f"Processing Chapter {ch_num} (ID: {chapter_id})...")
             
             try:
-                image_urls = []
-                
+                safe_ch_id = "".join([c if c.isalnum() else "_" for c in str(chapter_id)])
+                out_dir = Path(base_out) / f"chapter_{ch_num}_{safe_ch_id[:8]}"
+
                 if current_source == "MangaDex":
+                    image_urls = []
                     chap_info = get_chapter_info(chapter_id)
                     athome_resp = get_at_home_base(chapter_id)
                     base = athome_resp.get("baseUrl")
@@ -1175,19 +1114,42 @@ def main():
                     if not attrs.get("data") and athome_chapter.get("data"):
                         attrs = athome_chapter
                     image_urls = craft_image_urls(base, attrs, use_data_saver=use_saver)
-                else:
-                             
-                    image_urls = get_baozimh_images(chapter_id)
 
-                if not image_urls:
-                    console.print(f"[red]No image URLs found for chapter {ch_num}.[/red]")
-                    continue
+                    if not image_urls:
+                        console.print(f"[red]No image URLs found for chapter {ch_num}.[/red]")
+                        continue
                     
-                                      
-                safe_ch_id = "".join([c if c.isalnum() else "_" for c in str(chapter_id)])
-                out_dir = Path(base_out) / f"chapter_{ch_num}_{safe_ch_id[:8]}"
-                
-                download_images(image_urls, str(out_dir))
+                    download_images(image_urls, str(out_dir))
+                else:
+                    # Baozimh
+                    pbar = None
+                    console.print(f"[cyan]Downloading Chapter {ch_num} from Baozimh...[/cyan]")
+                    
+                    # chapter_id is the full URL in our new implementation
+                    for event in BAOZI_CLIENT.download_chapter_generator(chapter_id, str(out_dir)):
+                        if event.type == 'start':
+                            pbar = tqdm(total=event.total, unit="img", desc=event.message, leave=False, dynamic_ncols=True)
+                        elif event.type == 'progress':
+                            if pbar:
+                                pbar.update(1)
+                                pbar.set_description(event.message)
+                        elif event.type == 'skip':
+                            if pbar:
+                                pbar.update(1)
+                                pbar.set_description(event.message)
+                        elif event.type == 'error':
+                            if pbar: pbar.write(f"[red]{event.message}[/red]")
+                            else: console.print(f"[red]{event.message}[/red]")
+                        elif event.type == 'message':
+                            if pbar: pbar.write(f"[cyan]{event.message}[/cyan]")
+                            else: console.print(f"[cyan]{event.message}[/cyan]")
+                        elif event.type == 'complete':
+                            if pbar: 
+                                pbar.close()
+                                pbar = None
+                            console.print(f"[green]{event.message}[/green]")
+                    
+                    if pbar: pbar.close()
                 
                 meta_path = out_dir / "metadata.json"
                 meta = {

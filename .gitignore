@@ -12,3 +12,6 @@ venv/
 .env
 *.json
 scrapermh.txt
+baozimh_research/
+WSA/
+
