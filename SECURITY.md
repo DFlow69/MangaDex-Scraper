@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| Current  | :white_check_mark: |
+| 0.8.1 Beta  | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
