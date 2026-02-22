@@ -40,8 +40,8 @@ A feature-rich, dual-interface (GUI & TUI) application to search, view, and down
 
 1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/DFlow69/MangaDex-Scraper.git
-    cd MangaDex-Scraper
+    git clone https://github.com/DFlow69/MultiMangaScraper.git
+    cd MultiMangaScraper
     ```
 
 2.  **Install Dependencies**:
