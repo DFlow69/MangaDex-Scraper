@@ -1214,11 +1214,17 @@ class DownloadWorker(QThread):
                                 get_kwargs["impersonate"] = "chrome120"
                                 get_kwargs["headers"] = {"Referer": referer_url}
                             
-                            with session.get(url, **get_kwargs) as r:
+                            # Fix: curl_cffi.requests.Session.get() returns a response that doesn't 
+                            # support 'with' context manager in older versions or specific implementations.
+                            r = session.get(url, **get_kwargs)
+                            try:
                                 r.raise_for_status()
                                 with open(dest, "wb") as f:
                                     for chunk in r.iter_content(8192):
                                         f.write(chunk)
+                            finally:
+                                if hasattr(r, 'close'):
+                                    r.close()
                         except Exception as e:
                             self.progress.emit(f"Error page {j}: {e}")
                     
