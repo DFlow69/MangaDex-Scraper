@@ -51,11 +51,8 @@ logging.basicConfig(
 
 API = "https://api.mangadex.org"
 BAOZIMH_BASE = "https://www.baozimh.com"
-<<<<<<< HEAD
-HAPPYMH_BASE = "https://m.happymh.com"
-=======
 BAOZI_CLIENT = BaozimhClient()
->>>>>>> experiment-bz
+HAPPYMH_BASE = "https://m.happymh.com"
 LIBRARY_FILE = "library.json"
 console = Console()
 
@@ -781,58 +778,7 @@ def search_baozimh(query: str) -> List[dict]:
             "source": "baozimh"
         })
             
-<<<<<<< HEAD
-            img_tag = a_tag.find("amp-img")
-            cover_url = img_tag.get("src") if img_tag else ""
-            
-            title_tag = card.find("h3", class_="comics-card__title")
-            title_text = title_tag.get_text(strip=True) if title_tag else "Unknown"
-            
-                                        
-            eng_title = get_english_title(title_text)
-            display_title = f"{eng_title} ({title_text})" if eng_title else title_text
-            
-            tags_div = card.find("div", class_="tags")
-            status_text = tags_div.get_text(strip=True) if tags_div else ""
-            
-            results.append({
-                "id": manga_id,
-                "title": display_title,
-                "status": status_text,
-                "description": "No description available (Baozimh)",
-                "cover_filename": cover_url,               
-                "matched": True,
-                "all_candidates": [title_text],
-                "available_languages": ["zh"],
-                "source": "baozimh"
-            })
-        except Exception as e:
-            logging.error(f"Error: {e}")
-            continue
-    
-    # Filter results if we used an AniList translation to be more precise
-    if alt_query and results:
-        filtered = []
-        for r in results:
-            title_check = r['title']
-            query_check = alt_query
-            if zhconv:
-                try:
-                    title_check = zhconv.convert(title_check, 'zh-cn')
-                    query_check = zhconv.convert(query_check, 'zh-cn')
-                except:
-                    pass
-            
-            if query_check in title_check:
-                filtered.append(r)
-        
-        if filtered:
-            results = filtered
-            
-    return results
-=======
     return mapped_results
->>>>>>> experiment-bz
 
 def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
     logging.debug(f"Fetching chapters for: {manga_id}")
@@ -1651,47 +1597,7 @@ def main():
                 safe_ch_id = "".join([c if c.isalnum() else "_" for c in str(chapter_id)])
                 out_dir = Path(base_out) / f"chapter_{ch_num}_{safe_ch_id[:8]}"
 
-                if current_source == "MangaDex":
-                    image_urls = []
-                    chap_info = get_chapter_info(chapter_id)
-                    athome_resp = get_at_home_base(chapter_id)
-                    base = athome_resp.get("baseUrl")
-                    athome_chapter = athome_resp.get("chapter", {})
-                    attrs = chap_info.get("attributes", {})
-                    if not attrs.get("data") and athome_chapter.get("data"):
-                        attrs = athome_chapter
-                    image_urls = craft_image_urls(base, attrs, use_data_saver=use_saver)
-<<<<<<< HEAD
-                elif current_source == "Baozimh":
-                    image_urls = get_baozimh_images(chapter_id)
-                elif current_source == "Happymh":
-                    manga_url = f"{HAPPYMH_BASE}/manga/{manga_id}"
-                    image_urls = get_happymh_images(chapter_id, manga_url=manga_url)
-                else:
-                    # Fallback
-                    pass
-=======
->>>>>>> experiment-bz
-
-                    if not image_urls:
-                        console.print(f"[red]No image URLs found for chapter {ch_num}.[/red]")
-                        continue
-                    
-<<<<<<< HEAD
-                                      
-                safe_ch_id = "".join([c if c.isalnum() else "_" for c in str(chapter_id)])
-                out_dir = Path(base_out) / f"chapter_{ch_num}_{safe_ch_id[:8]}"
-                
-                # Pass chapter URL as referer for images
-                referer = None
-                if current_source == "Happymh":
-                    referer = f"{HAPPYMH_BASE}{chapter_id}" if chapter_id.startswith("/") else chapter_id
-                
-                download_images(image_urls, str(out_dir), source=current_source, referer=referer)
-=======
-                    download_images(image_urls, str(out_dir))
-                else:
-                    # Baozimh
+                if current_source == "Baozimh":
                     pbar = None
                     console.print(f"[cyan]Downloading Chapter {ch_num} from Baozimh...[/cyan]")
                     
@@ -1720,7 +1626,31 @@ def main():
                             console.print(f"[green]{event.message}[/green]")
                     
                     if pbar: pbar.close()
->>>>>>> experiment-bz
+                else:
+                    image_urls = []
+                    if current_source == "MangaDex":
+                        chap_info = get_chapter_info(chapter_id)
+                        athome_resp = get_at_home_base(chapter_id)
+                        base = athome_resp.get("baseUrl")
+                        athome_chapter = athome_resp.get("chapter", {})
+                        attrs = chap_info.get("attributes", {})
+                        if not attrs.get("data") and athome_chapter.get("data"):
+                            attrs = athome_chapter
+                        image_urls = craft_image_urls(base, attrs, use_data_saver=use_saver)
+                    elif current_source == "Happymh":
+                        manga_url = f"{HAPPYMH_BASE}/manga/{manga_id}"
+                        image_urls = get_happymh_images(chapter_id, manga_url=manga_url)
+                    
+                    if not image_urls:
+                        console.print(f"[red]No image URLs found for chapter {ch_num}.[/red]")
+                        continue
+                    
+                    # Pass chapter URL as referer for images
+                    referer = None
+                    if current_source == "Happymh":
+                        referer = f"{HAPPYMH_BASE}{chapter_id}" if chapter_id.startswith("/") else chapter_id
+                    
+                    download_images(image_urls, str(out_dir), source=current_source, referer=referer)
                 
                 meta_path = out_dir / "metadata.json"
                 meta = {

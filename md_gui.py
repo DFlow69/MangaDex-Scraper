@@ -211,11 +211,8 @@ sys.excepthook = excepthook
 
 API = "https://api.mangadex.org"
 BAOZIMH_BASE = "https://www.baozimh.com"
-<<<<<<< HEAD
-HAPPYMH_BASE = "https://m.happymh.com"
-=======
 BAOZI_CLIENT = BaozimhClient()
->>>>>>> experiment-bz
+HAPPYMH_BASE = "https://m.happymh.com"
 SETTINGS_FILE = "settings.json"
 LIBRARY_FILE = "library.json"
 
@@ -913,32 +910,6 @@ def search_baozimh(query: str) -> List[dict]:
                                                       
             query = translated_query
 
-<<<<<<< HEAD
-    html = fetch_baozimh_html(f"{BAOZIMH_BASE}/search", params={"q": query})
-    if not html: return []
-    
-    soup = BeautifulSoup(html, "html.parser")
-
-    results = []
-    
-                          
-    for card in soup.select("div.comics-card"):
-        link = card.select_one("a.comics-card__poster")
-        if not link: continue
-        
-        href = link.get("href")
-        title = link.get("title")
-        if not href or not title: continue
-        
-                                                         
-        manga_id = href.split("/")[-1]
-        
-                     
-        img_tag = link.select_one("amp-img, img")
-        cover_url = None
-        if img_tag:
-            cover_url = img_tag.get("src") or img_tag.get("data-src")
-=======
     try:
         search_results = BAOZI_CLIENT.search_comics(query)
     except Exception as e:
@@ -957,7 +928,6 @@ def search_baozimh(query: str) -> List[dict]:
                     query_check = zhconv.convert(query_check, 'zh-cn')
                 except:
                     pass
->>>>>>> experiment-bz
             
             if query_check in title_check:
                 filtered.append(r)
@@ -982,26 +952,6 @@ def search_baozimh(query: str) -> List[dict]:
             "available_languages": ["zh"],
             "source": "baozimh"
         })
-        
-    # Filter results if we used an AniList translation to be more precise
-    if translated_query and results:
-        filtered = []
-        for r in results:
-            title_check = r['title']
-            query_check = translated_query
-            if zhconv:
-                try:
-                    title_check = zhconv.convert(title_check, 'zh-cn')
-                    query_check = zhconv.convert(query_check, 'zh-cn')
-                except:
-                    pass
-            
-            if query_check in title_check:
-                filtered.append(r)
-        
-        if filtered:
-            results = filtered
-            
     return results
 
 def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
@@ -1040,7 +990,6 @@ def get_baozimh_images(chapter_url_path: str) -> List[str]:
         base_url = chapter_url_path
         
     return BAOZI_CLIENT.get_chapter_images(base_url)
-
 
 class SearchWorker(QThread):
     finished = Signal(list)
@@ -1145,12 +1094,6 @@ class DownloadWorker(QThread):
                 out_path = Path(self.base_dir) / folder_name
 
                 if self.site == "baozimh":
-<<<<<<< HEAD
-                    urls = get_baozimh_images(chap['id'])
-                elif self.site == "happymh":
-                    manga_url = f"{HAPPYMH_BASE}/manga/{self.manga_id}"
-                    urls = get_happymh_images(chap['id'], manga_url=manga_url)
-=======
                     # Baozimh Download
                     if not out_path.exists():
                         out_path.mkdir(parents=True, exist_ok=True)
@@ -1174,8 +1117,18 @@ class DownloadWorker(QThread):
                             self.progress.emit(f"Ch {ch_num}: {event.message}")
                         elif event.type == 'complete':
                             self.progress.emit(f"Ch {ch_num}: {event.message}")
-                            
->>>>>>> experiment-bz
+                    
+                    if not self._is_running: break
+                    # Update progress after each chapter
+                    self.percent.emit(int(((i + 1) / total_chaps) * 100))
+                    
+                    # Common Metadata & CBZ
+                    self._finalize_chapter(out_path, folder_name, chap)
+                    continue
+
+                elif self.site == "happymh":
+                    manga_url = f"{HAPPYMH_BASE}/manga/{self.manga_id}"
+                    urls = get_happymh_images(chap['id'], manga_url=manga_url)
                 else:
                     # MangaDex Download
                     urls = []
@@ -1190,19 +1143,12 @@ class DownloadWorker(QThread):
                     
                     urls = craft_image_urls(base, attrs, use_data_saver=self.use_saver)
 
-<<<<<<< HEAD
                 if not urls:
                     self.progress.emit(f"No images for Ch {ch_num}")
                     continue
                 
-                                      
-                safe_title = "".join(c for c in (chap.get('title') or "") if c.isalnum() or c in (' ', '-', '_')).strip()
-                folder_name = f"Chapter {ch_num}"
-                if safe_title:
-                    folder_name += f" - {safe_title}"
-                
-                out_path = Path(self.base_dir) / folder_name
-                out_path.mkdir(parents=True, exist_ok=True)
+                if not out_path.exists():
+                    out_path.mkdir(parents=True, exist_ok=True)
                 
                 # Use curl_cffi for happymh images
                 session = None
@@ -1213,6 +1159,7 @@ class DownloadWorker(QThread):
                 else:
                     session = requests.Session()
 
+                total_imgs = len(urls)
                 for j, url in enumerate(urls, 1):
                     if not self._is_running: break
                     fname = f"{j:03d}.jpg"
@@ -1247,62 +1194,17 @@ class DownloadWorker(QThread):
                                         f.write(chunk)
                         except Exception as e:
                             self.progress.emit(f"Error page {j}: {e}")
-=======
-                    if not urls:
-                        self.progress.emit(f"No images for Ch {ch_num}")
-                        continue
                     
-                    out_path.mkdir(parents=True, exist_ok=True)
-                    
-                    total_imgs = len(urls)
-                    session = requests.Session()
-                    for j, url in enumerate(urls, 1):
-                        if not self._is_running: break
-                        fname = f"{j:03d}.jpg"
-                        if "." in url:
-                            parts = url.split(".")
-                            ext = parts[-1].split("?")[0]
-                            if len(ext) <= 4: fname = f"{j:03d}.{ext}"
-                        
-                        dest = out_path / fname
-                        if not dest.exists():
-                            try:
-                                with session.get(url, stream=True, timeout=30) as r:
-                                    r.raise_for_status()
-                                    with open(dest, "wb") as f:
-                                        for chunk in r.iter_content(8192):
-                                            f.write(chunk)
-                            except Exception as e:
-                                self.progress.emit(f"Error img {j}: {e}")
-                        
-                        # Update progress for MangaDex as well
-                        if total_imgs > 0:
-                            chapter_progress = j / total_imgs
-                            total_progress = ((i + chapter_progress) / total_chaps) * 100
-                            self.percent.emit(int(total_progress))
->>>>>>> experiment-bz
+                    # Update progress
+                    if total_imgs > 0:
+                        chapter_progress = j / total_imgs
+                        total_progress = ((i + chapter_progress) / total_chaps) * 100
+                        self.percent.emit(int(total_progress))
                 
                 if not self._is_running: break
-
-                # Common Metadata
-                meta = {
-                    "chapter": chap,
-                    "downloaded_at": int(time.time())
-                }
-                if out_path.exists():
-                    with open(out_path / "metadata.json", "w", encoding="utf-8") as f:
-                        json.dump(meta, f, indent=2)
                 
-                    # Common CBZ
-                    if self.make_cbz:
-                        cbz_path = Path(self.base_dir) / f"{folder_name}.cbz"
-                        self.progress.emit(f"Creating CBZ: {cbz_path.name}")
-                        with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                            for item in out_path.glob("*"):
-                                if item.is_file():
-                                    zf.write(item, arcname=item.name)
-                                        
-                        shutil.rmtree(out_path)
+                # Common Metadata & CBZ
+                self._finalize_chapter(out_path, folder_name, chap)
 
             except Exception as e:
                 self.error.emit(f"Error Ch {ch_num}: {e}")
@@ -1310,6 +1212,27 @@ class DownloadWorker(QThread):
             self.percent.emit(int(((i + 1) / total_chaps) * 100))
         
         self.finished.emit()
+
+    def _finalize_chapter(self, out_path, folder_name, chap):
+        # Common Metadata
+        meta = {
+            "chapter": chap,
+            "downloaded_at": int(time.time())
+        }
+        if out_path.exists():
+            with open(out_path / "metadata.json", "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+        
+            # Common CBZ
+            if self.make_cbz:
+                cbz_path = Path(self.base_dir) / f"{folder_name}.cbz"
+                self.progress.emit(f"Creating CBZ: {cbz_path.name}")
+                with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for item in out_path.glob("*"):
+                        if item.is_file():
+                            zf.write(item, arcname=item.name)
+                                
+                shutil.rmtree(out_path)
 
 class ImageLoader(QThread):
     loaded = Signal(QImage)
