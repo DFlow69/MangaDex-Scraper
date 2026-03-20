@@ -65,6 +65,28 @@ try:
 except ImportError:
     zhconv = None
 
+def debug_environment():
+    """Reveal why dev dir works but clones fail"""
+    print("\n=== ENVIRONMENT DEBUG ===")
+    print(f"CWD: {os.getcwd()}")
+    print(f"Python path: {sys.executable}")
+    print(f"User: {os.getenv('USERNAME')}")
+    print(f"SeleniumBase cache: {os.path.expanduser('~/.seleniumbase')}")
+    
+    # Check hidden files
+    for file in ['happymh_cookies.json', '.seleniumbase', 'chrome_debug.log']:
+        if os.path.exists(file):
+            print(f"FOUND: {file}")
+    
+    # Test requests directly
+    import requests
+    try:
+        r = requests.get("https://m.happymh.com/manga/quanmintaohuangwodewupinnengshengji", timeout=10)
+        print(f"Direct HTTP: {r.status_code}")
+    except Exception as e:
+        print(f"Direct HTTP ERROR: {e}")
+    print("=========================\n")
+
 def bootstrap_environment():
     """Make scraper work in ANY directory after git clone"""
     static_dir = "baozimh_research"
@@ -84,6 +106,7 @@ def bootstrap_environment():
     
     print("✅ Environment ready for any directory!")
 
+debug_environment()
 bootstrap_environment()
 
                         
@@ -717,11 +740,92 @@ def search_happymh(query: str) -> List[dict]:
             
     return results
 
+def portable_happymh_chapter_detection(url):
+    """Works for ANY series in ANY directory - fresh SeleniumBase UC every time"""
+    if not selenium_available:
+        print("DEBUG: Selenium not available for portable detection")
+        return []
+        
+    from seleniumbase import Driver
+    # CLEAN PROFILE - no cache dependency
+    driver = Driver(
+        uc=True,
+        headless=False,
+        disable_csp=True,
+        undetectable=True,
+        browser="chrome",
+        user_data_dir=None,  # NO cache!
+        driver_reset=True    # Fresh driver
+    )
+    
+    try:
+        print(f"Launching portable SeleniumBase UC for: {url}")
+        driver.get(url)
+        
+        # Cloudflare clearance (universal)
+        try:
+            WebDriverWait(driver, 120).until_not(
+                lambda d: "Just a moment" in d.title
+            )
+            # Also wait for common chapter list elements
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "ul.chapter-list, .MuiList-root, a[href*='/mangaread/']"))
+            )
+        except Exception as e:
+            print(f"DEBUG: Portable wait timed out or failed: {e}")
+            
+        # Extract chapters DYNAMICALLY (no static files)
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # Extract manga_id from URL
+        manga_id = url.split("/")[-1]
+        
+        # Reuse existing parsing logic logic but adapted for dynamic soup
+        chapters = []
+        links = soup.select("a[href*='/mangaread/'], div.MuiListItemButton-root[data-href*='/mangaread/']")
+        if not links:
+            links = soup.select("a[href*='/mangaread/'], *[data-href*='/mangaread/']")
+            
+        seen_ids = set()
+        for link in links:
+            href = link.get("href") or link.get("data-href")
+            if not href or href in seen_ids: continue
+            if manga_id not in href and "/mangaread/" not in href: continue
+            
+            link_text = link.get_text(" ", strip=True)
+            if any(x in link_text for x in ["吐槽", "收藏", "问题反馈", "下一话", "上一话"]):
+                continue
+                
+            seen_ids.add(href)
+            num_match = re.search(r'(?:第|Ch|Chapter\s*)?(\d+(?:\.\d+)?)', link_text)
+            chap_num = num_match.group(1) if num_match else "0"
+            
+            chapters.append({
+                "id": href,
+                "chapter": chap_num,
+                "title": link_text,
+                "language": "zh",
+                "groups": [],
+                "publishAt": "",
+                "volume": "",
+                "source": "happymh"
+            })
+            
+        print(f"PORTABLE: Found {len(chapters)} chapters")
+        return chapters
+    except Exception as e:
+        print(f"DEBUG: Portable HappyMH detection failed: {e}")
+        return []
+    finally:
+        driver.quit()
+
 def fetch_chapters_happymh(manga_id: str) -> List[dict]:
     url = f"{HAPPYMH_BASE}/manga/{manga_id}"
     html = fetch_happymh_html(url)
     
-    if not html: return []
+    if not html:
+        # Portable dynamic detection if no static file/direct response
+        return portable_happymh_chapter_detection(url)
     
     soup = BeautifulSoup(html, "html.parser")
     chapters = []
@@ -837,6 +941,13 @@ def fetch_chapters_happymh(manga_id: str) -> List[dict]:
             
     # Sort descending by default (usually what users want)
     chapters.sort(key=chap_sort_key, reverse=True)
+    
+    if not chapters:
+        # Final fallback: if no chapters found in the provided HTML (could be template or 403 response), 
+        # try the portable SeleniumBase UC detection.
+        print(f"DEBUG: No chapters found in HTML for {manga_id}, trying portable fallback...")
+        return portable_happymh_chapter_detection(url)
+        
     return chapters
 
 def get_happymh_images(chapter_url_path: str, manga_url: Optional[str] = None) -> List[str]:
