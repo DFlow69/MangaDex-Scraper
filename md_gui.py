@@ -562,13 +562,10 @@ def fetch_happymh_html(url: str, referer: Optional[str] = None) -> Optional[str]
                             return full_content[start_idx:]
                         return full_content
                 elif "/mangaread/" in url:
-                    # Use Line 3 for images as requested
-                    if len(lines) >= 3:
-                        print(f"FORCED: Using IMAGE section (Line 3) from {research_file}")
-                        return lines[2].strip()
-                    else:
-                        print(f"FORCED: Falling back to Line 1 for IMAGE section from {research_file}")
-                        return lines[0].strip()
+                    # For reader pages, use the whole file to ensure we don't miss any containers
+                    # (User mentioned Line 3, but the file might have images in other lines too)
+                    print(f"FORCED: Using full content for IMAGE section from {research_file}")
+                    return "".join(lines)
                 else:
                     return "".join(lines)
         except Exception as e:
@@ -796,10 +793,30 @@ def get_happymh_images(chapter_url_path: str, manga_url: Optional[str] = None) -
     html = fetch_happymh_html(url, referer=manga_url)
     if not html: return []
     
-    images = []
+    images_with_order = []
     soup = BeautifulSoup(html, "html.parser")
     
-    # --- Method 1: Check for extra captured data ---
+    # --- Method 1: Priority scan for id="scanX" ---
+    # This is the most reliable way to get the correct order as per user suggestion
+    scan_tags = soup.select("img[id^='scan']")
+    for tag in scan_tags:
+        src = tag.get("src") or tag.get("data-src") or tag.get("data-original")
+        if src and src.startswith("http"):
+            try:
+                # Extract number from scan0, scan1, etc.
+                order = int(re.search(r'\d+', tag.get("id", "")).group())
+                images_with_order.append((order, src))
+            except:
+                images_with_order.append((999, src))
+
+    if images_with_order:
+        images_with_order.sort()
+        return [x[1] for x in images_with_order]
+
+    # --- Fallback Methods if no scan IDs found ---
+    images = []
+    
+    # --- Method 2: Check for extra captured data ---
     extra_data_div = soup.find("div", id="extra_captured_data")
     if extra_data_div:
         try:
@@ -1218,15 +1235,18 @@ class DownloadWorker(QThread):
                             get_kwargs = {"stream": True, "timeout": 30}
                             if self.site == "happymh" and requests_cf:
                                 get_kwargs["impersonate"] = "chrome120"
-                                # Use referer_url (the chapter reader page) for images
+                                # Fix 403: Use origin referer and more browser-like headers
                                 get_kwargs["headers"] = {
-                                    "Referer": referer_url,
+                                    "Referer": "https://m.happymh.com/",
+                                    "Origin": "https://m.happymh.com",
                                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
                                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                                     "Sec-Fetch-Dest": "image",
                                     "Sec-Fetch-Mode": "no-cors",
-                                    "Sec-Fetch-Site": "same-site"
+                                    "Sec-Fetch-Site": "same-site",
+                                    "Cache-Control": "no-cache",
+                                    "Pragma": "no-cache"
                                 }
                             
                             # Fix: curl_cffi.requests.Session.get() returns a response that doesn't 
