@@ -1260,8 +1260,16 @@ class DownloadWorker(QThread):
                             try:
                                 if self.debug_mode:
                                     print(f"DEBUG: Response status: {r.status_code}")
-                                    # print(f"DEBUG: Response headers: {r.headers}")
                                 
+                                # Retry logic for 403: some strict CDNs prefer NO referer
+                                if r.status_code == 403 and self.site == "happymh":
+                                    if self.debug_mode: print("DEBUG: Got 403, retrying without Referer...")
+                                    get_kwargs["headers"].pop("Referer", None)
+                                    get_kwargs["headers"].pop("Origin", None)
+                                    r.close()
+                                    r = session.get(url, **get_kwargs)
+                                    if self.debug_mode: print(f"DEBUG: Retry Response status: {r.status_code}")
+
                                 r.raise_for_status()
                                 with open(dest, "wb") as f:
                                     for chunk in r.iter_content(8192):
