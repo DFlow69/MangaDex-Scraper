@@ -655,83 +655,111 @@ def search_happymh(query: str) -> List[dict]:
             
     return results
 
-def portable_happymh_chapter_detection(url):
-    """Works for ANY series in ANY directory - fresh SeleniumBase UC every time"""
+def get_happymh_chapters_dynamic(url):
+    """CORRECT SeleniumBase UC - works for ANY series"""
     if not selenium_available:
         print("DEBUG: Selenium not available for portable detection")
         return []
         
-    series_slug = url.split('/')[-1]
-    print(f"DEBUG: Detecting chapters for series: {series_slug}")
-
     from seleniumbase import Driver
-    # CLEAN PROFILE - no cache dependency
+    series_slug = url.split('/')[-1]
+    print(f"DEBUG: Launching SeleniumBase UC for {series_slug}")
+
+    # CORRECT SeleniumBase UC syntax - NO invalid parameters
     driver = Driver(
-        uc=True,
-        headless=False,
+        uc=True,           # Undetected Chrome
+        headless=False,    # Visible for debugging
         disable_csp=True,
         undetectable=True,
         browser="chrome",
-        user_data_dir=None,  # NO cache!
-        driver_reset=True    # Fresh driver
+        user_data_dir=None # NO cache!
     )
     
     try:
-        print(f"Launching portable SeleniumBase UC for: {url}")
+        # Navigate to series page
+        print(f"DEBUG: Loading {url}")
         driver.get(url)
         
         # Cloudflare clearance (universal)
+        print("Waiting for Cloudflare clearance...")
         try:
-            WebDriverWait(driver, 120).until_not(
+            WebDriverWait(driver, 10).until_not(
                 lambda d: "Just a moment" in d.title
             )
-            # Also wait for common chapter list elements
-            WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "ul.chapter-list, .MuiList-root, a[href*='/mangaread/']"))
-            )
-        except Exception as e:
-            print(f"DEBUG: Portable wait timed out or failed: {e}")
+        except:
+            # Simple sleep fallback
+            time.sleep(10)
+            
+        # CONFIRM page loaded or manual intervention
+        if "Just a moment" in driver.title:
+            print("\n" + "="*50)
+            print("CLOUDFLARE STILL BLOCKING - manual intervention needed")
+            print("Solve Cloudflare manually in the browser window.")
+            print("Once the manga page appears, press ENTER in this console...")
+            print("="*50 + "\n")
+            input("Solve Cloudflare manually → Press ENTER...")
             
         # Extract chapters DYNAMICALLY (no static files)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
-        # Reuse existing parsing logic logic but adapted for dynamic soup
         chapters = []
-        links = soup.select("a[href*='/mangaread/'], div.MuiListItemButton-root[data-href*='/mangaread/']")
-        if not links:
-            links = soup.select("a[href*='/mangaread/'], *[data-href*='/mangaread/']")
-            
+        
+        # Multiple selectors for chapter lists to be robust
+        selectors = [
+            "ul.chapter-list li a",
+            ".chapter-item a",
+            "li a[href*='mangaread']",
+            ".chapter li a",
+            "a[href*='/mangaread/']",
+            "div.MuiListItemButton-root[data-href*='/mangaread/']"
+        ]
+        
         seen_ids = set()
-        for link in links:
-            href = link.get("href") or link.get("data-href")
-            if not href or href in seen_ids: continue
-            
-            # CRITICAL: Match THIS SERIES ONLY to avoid mixed results
-            if series_slug not in href and "/mangaread/" not in href: continue
-            
-            link_text = link.get_text(" ", strip=True)
-            if any(x in link_text for x in ["吐槽", "收藏", "问题反馈", "下一话", "上一话"]):
-                continue
+        for selector in selectors:
+            links = soup.select(selector)
+            for link in links:
+                href = link.get("href") or link.get("data-href")
+                if not href or href in seen_ids: continue
                 
-            seen_ids.add(href)
-            num_match = re.search(r'(?:第|Ch|Chapter\s*)?(\d+(?:\.\d+)?)', link_text)
-            chap_num = num_match.group(1) if num_match else "0"
+                # CRITICAL: Match THIS SERIES ONLY to avoid mixed results
+                if series_slug not in href and "/mangaread/" not in href: continue
+                
+                link_text = link.get_text(" ", strip=True)
+                if any(x in link_text for x in ["吐槽", "收藏", "问题反馈", "下一话", "上一话", "返回", "目录"]):
+                    continue
+                    
+                seen_ids.add(href)
+                num_match = re.search(r'(?:第|Ch|Chapter\s*)?(\d+(?:\.\d+)?)', link_text)
+                chap_num = num_match.group(1) if num_match else "0"
+                
+                chapters.append({
+                    "id": href,
+                    "chapter": chap_num,
+                    "title": link_text,
+                    "language": "zh",
+                    "groups": [],
+                    "publishAt": "",
+                    "volume": "",
+                    "source": "happymh"
+                })
+            if chapters:
+                break
             
-            chapters.append({
-                "id": href,
-                "chapter": chap_num,
-                "title": link_text,
-                "language": "zh",
-                "groups": [],
-                "publishAt": "",
-                "volume": "",
-                "source": "happymh"
-            })
-            
-        print(f"PORTABLE: Found {len(chapters)} chapters for {series_slug}")
-        return chapters
+        print(f"✅ DYNAMIC: Found {len(chapters)} chapters for {series_slug}")
+        
+        def chap_sort_key(c):
+            try:
+                return float(c['chapter'])
+            except:
+                return 0.0
+        
+        # Sort descending by default (usually what users want)
+        chapters.sort(key=chap_sort_key, reverse=True)
+        
+        # Dedupe by ID just in case
+        return list({c['id']: c for c in chapters}.values())
+        
     except Exception as e:
-        print(f"DEBUG: Portable HappyMH detection failed for {series_slug}: {e}")
+        print(f"SELENIUM ERROR: {e}")
         return []
     finally:
         driver.quit()
@@ -739,132 +767,18 @@ def portable_happymh_chapter_detection(url):
 def fetch_chapters_happymh(manga_id: str) -> List[dict]:
     url = f"{HAPPYMH_BASE}/manga/{manga_id}"
     
-    # 1. DYNAMIC SeleniumBase UC (primary - works everywhere)
-    # This is the most reliable way to bypass Cloudflare and get chapters for ANY series
-    chapters = portable_happymh_chapter_detection(url)
+    # SINGLE ATTEMPT - NO RETRIES
+    chapters = get_happymh_chapters_dynamic(url)
+    
     if chapters:
         return chapters
         
-    # 2. Fallback to direct HTTP (if UC fails or not available)
-    html = fetch_happymh_html(url)
-    if not html: return []
-    
-    soup = BeautifulSoup(html, "html.parser")
-    chapters = []
-    
-    # 1. Try standard a tags and elements with data-href
-    # Actual chapters are usually MuiListItemButton links or list items
-    # We want to avoid parent containers or navigation headers
-    links = soup.select("a[href*='/mangaread/'], div.MuiListItemButton-root[data-href*='/mangaread/']")
-    
-    # Fallback to broader selector only if nothing found
-    if not links:
-        links = soup.select("a[href*='/mangaread/'], *[data-href*='/mangaread/']")
-    
-    # 2. Try JSON in scripts if too few links
-    if len(links) < 2:
-        scripts = soup.find_all("script")
-        for s in scripts:
-            if not s.string: continue
-            if '"chapters"' in s.string and '"id"' in s.string:
-                try:
-                    # Look for a list of chapter objects in JS
-                    matches = re.findall(r'\{"id":(\d+),"name":"([^"]+)"', s.string)
-                    if matches:
-                        for cid, name in matches:
-                            href = f"/mangaread/{manga_id}/{cid}"
-                            # Extract chapter number: "第40话" -> "40"
-                            num_match = re.search(r'(\d+(?:\.\d+)?)', name)
-                            chap_num = num_match.group(1) if num_match else "0"
-                            chapters.append({
-                                "id": href,
-                                "chapter": chap_num,
-                                "title": name,
-                                "language": "zh",
-                                "groups": [],
-                                "publishAt": "",
-                                "volume": "",
-                                "source": "happymh"
-                            })
-                        if chapters: return chapters
-                except:
-                    pass
-
-    seen_ids = set()
-    for link in links:
-        href = link.get("href") or link.get("data-href")
-        if not href or href in seen_ids: continue
-        
-        # Ensure it's a chapter link for THIS manga
-        # In the research file, href is like /mangaread/manga-id/chapter-id
-        if manga_id not in href and "/mangaread/" not in href: continue
-        
-        # --- NEW: Filter out UI navigation buttons and unrelated links ---
-        # These buttons often have /mangaread/ links but are not actual chapters
-        # Use a more comprehensive list of UI words to skip
-        link_text_all = link.get_text(" ", strip=True)
-        ui_keywords = ["下一话", "上一话", "吐槽", "收藏", "问题反馈", "返回", "共", "章节", "改变排序", "目录"]
-        if any(x in link_text_all for x in ui_keywords):
-            # If the text is *exactly* a chapter name like "第40话" but also has these words,
-            # we should be careful. But usually these buttons have "下一话" as their ONLY text.
-            # If the text contains "吐槽", it's definitely a button.
-            if "吐槽" in link_text_all or "收藏" in link_text_all:
-                continue
-            
-        # Also check if it's inside a navigation-like container (like a Fab or standard Button)
-        classes = link.get("class", [])
-        if any(c in classes for c in ["MuiFab-root", "MuiButton-contained", "MuiButton-root", "css-1ppzpe9"]):
-            # Actual chapters are usually MuiListItemButton or have css-1nkaicf-alink
-            if "MuiListItemButton-root" not in classes and "css-1nkaicf-alink" not in str(classes):
-                continue
-
-        # Extraction logic for title:
-        # Check primary Mui text first, then span, then whole link text
-        # We want to be very specific to get ONLY the chapter name
-        title_tag = link.select_one(".MuiListItemText-primary") or \
-                    link.select_one("span.MuiTypography-root") or \
-                    link.select_one("span") or \
-                    link.select_one(".mg-chapter-name")
-        
-        # If title_tag is the whole link itself, avoid infinite loop or getting too much text
-        if title_tag:
-            text = title_tag.get_text(strip=True)
-        else:
-            # Try to find any text that looks like "第X话" or a number
-            text = link.get_text(" ", strip=True)
-
-        # Final check: if the extracted text is still one of the bad strings, skip it
-        if not text or any(x in text for x in ["吐槽", "收藏", "问题反馈"]):
-            continue
-
-        seen_ids.add(href)
-
-        # Clean up the text: remove "Ch", "Chapter", "第", "话" etc. for sorting
-        # Also support Chapter 0
-        num_match = re.search(r'(?:第|Ch|Chapter\s*)?(\d+(?:\.\d+)?)', text)
-        chap_num = num_match.group(1) if num_match else "0"
-        
-        chapters.append({
-            "id": href,
-            "chapter": chap_num,
-            "title": text,
-            "language": "zh",
-            "groups": [],
-            "publishAt": "",
-            "volume": "",
-            "source": "happymh"
-        })
-    
-    def chap_sort_key(c):
-        try:
-            return float(c['chapter'])
-        except:
-            return 0.0
-            
-    # Sort descending by default (usually what users want)
-    chapters.sort(key=chap_sort_key, reverse=True)
-    
-    return chapters
+    print("❌ DYNAMIC FAILED - Falling back to manual instructions")
+    print("Please:")
+    print("1. Open https://m.happymh.com/manga/[series] manually")
+    print("2. Solve Cloudflare")
+    print("3. Copy chapter URLs from page source or try again")
+    return []
 
 def get_happymh_images(chapter_url_path: str, manga_url: Optional[str] = None) -> List[str]:
     if chapter_url_path.startswith("/"):
