@@ -19,6 +19,8 @@ except ImportError:
 from pathlib import Path
 from typing import List, Optional
 
+from baozimh_client_v2 import BaozimhClient, DownloadEvent
+
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QLineEdit, QPushButton, QLabel, 
                                QTreeWidget, QTreeWidgetItem, QSplitter, QTextEdit, 
@@ -209,7 +211,11 @@ sys.excepthook = excepthook
 
 API = "https://api.mangadex.org"
 BAOZIMH_BASE = "https://www.baozimh.com"
+<<<<<<< HEAD
 HAPPYMH_BASE = "https://m.happymh.com"
+=======
+BAOZI_CLIENT = BaozimhClient()
+>>>>>>> experiment-bz
 SETTINGS_FILE = "settings.json"
 LIBRARY_FILE = "library.json"
 
@@ -907,6 +913,7 @@ def search_baozimh(query: str) -> List[dict]:
                                                       
             query = translated_query
 
+<<<<<<< HEAD
     html = fetch_baozimh_html(f"{BAOZIMH_BASE}/search", params={"q": query})
     if not html: return []
     
@@ -931,7 +938,39 @@ def search_baozimh(query: str) -> List[dict]:
         cover_url = None
         if img_tag:
             cover_url = img_tag.get("src") or img_tag.get("data-src")
+=======
+    try:
+        search_results = BAOZI_CLIENT.search_comics(query)
+    except Exception as e:
+        print(f"Error searching baozimh: {e}")
+        return []
+
+    # Filter results if we used an AniList translation to be more precise
+    if translated_query and search_results:
+        filtered = []
+        for r in search_results:
+            title_check = r['title']
+            query_check = translated_query
+            if zhconv:
+                try:
+                    title_check = zhconv.convert(title_check, 'zh-cn')
+                    query_check = zhconv.convert(query_check, 'zh-cn')
+                except:
+                    pass
+>>>>>>> experiment-bz
             
+            if query_check in title_check:
+                filtered.append(r)
+        
+        if filtered:
+            search_results = filtered
+
+    results = []
+    for r in search_results:
+        manga_id = r['url'].rstrip('/').split("/")[-1]
+        title = r['title']
+        cover_url = r.get('cover_url', '')
+
         results.append({
             "id": manga_id,
             "title": title,
@@ -967,125 +1006,40 @@ def search_baozimh(query: str) -> List[dict]:
 
 def fetch_chapters_baozimh(manga_id: str) -> List[dict]:
     url = f"{BAOZIMH_BASE}/comic/{manga_id}"
-    html = fetch_baozimh_html(url)
-    if not html: return []
     
-    soup = BeautifulSoup(html, "html.parser")
+    try:
+        chapters_data = BAOZI_CLIENT.get_chapter_list(url)
+    except Exception as e:
+        print(f"Error fetching chapters: {e}")
+        return []
+    
     chapters = []
-    
-                                           
-                                               
-                                          
-    latest_date = ""
-    date_regex = re.compile(r"(\d{4}年\d{2}月\d{2}日)")
-    
-                                                   
-                                         
-                                                                                       
-                                                                 
-    body_text = soup.get_text()
-    date_match = date_regex.search(body_text)
-    if date_match:
-                                           
-        d_str = date_match.group(1)
-        latest_date = d_str.replace("年", "-").replace("月", "-").replace("日", "")
-    
-                      
-                                                           
-                                                           
-                                                                       
-                                               
-                                                                             
-                                                                          
-    
-                                                                                               
-                                              
-    seen_ids = set()
-
-    for link in soup.select("div.comics-chapters a.comics-chapters__item"):
-        href = link.get("href")
-        if not href or href in seen_ids: continue
-        seen_ids.add(href)
+    for c in chapters_data:
+        # c has 'title', 'url'
+        text = c['title']
+        href = c['url'] # Absolute URL
         
-        text = link.get_text().strip()
+        # Extract date if possible (not in BAOZI_CLIENT yet, skipping for now)
         
-                                                                                            
-                                                                      
-                                                    
-                                                                                         
-                                                               
-                                                                                    
-                                               
-                                                          
-                                                                           
-                                           
-                                                                                      
-                                                                      
-                                                               
-                                                         
-                                                                               
-                                                    
-        
-        publish_at = ""
-        if latest_date and len(chapters) == 0:                                                           
-             publish_at = latest_date
-
         chapters.append({
             "id": href, 
             "chapter": text, 
             "title": text,
             "language": "zh",
             "groups": [],
-            "publishAt": publish_at,
+            "publishAt": "",
             "source": "baozimh"
         })
         
     return chapters
 
 def get_baozimh_images(chapter_url_path: str) -> List[str]:
-                                         
     if chapter_url_path.startswith("/"):
         base_url = f"{BAOZIMH_BASE}{chapter_url_path}"
     else:
         base_url = chapter_url_path
         
-    r = fetch_baozimh_response(base_url)
-    if not r: return []
-    
-    soup = BeautifulSoup(r.text, "html.parser")
-    images = []
-    seen = set()
-    
-                                              
-                                                                   
-                                                                                  
-                                                                    
-    targets = soup.select(".comic-contain__item")
-    
-                                                                                         
-    if not targets:
-        container = soup.select_one(".comic-contain")
-        if container:
-            targets = container.select("amp-img, img")
-            
-                                                                               
-    if not targets:
-                                                                  
-                                 
-        for img in soup.find_all("amp-img"):
-                                                      
-            if img.find_parent(class_="recommend--item"):
-                continue
-            targets.append(img)
-
-                               
-    for img in targets:
-        src = img.get("src") or img.get("data-src")
-        if src and src not in seen:
-            images.append(src)
-            seen.add(src)
-            
-    return images
+    return BAOZI_CLIENT.get_chapter_images(base_url)
 
 
 class SearchWorker(QThread):
@@ -1183,13 +1137,48 @@ class DownloadWorker(QThread):
             self.progress.emit(f"Processing Chapter {ch_num}...")
             
             try:
-                urls = []
+                safe_title = "".join(c for c in (chap.get('title') or "") if c.isalnum() or c in (' ', '-', '_')).strip()
+                folder_name = f"Chapter {ch_num}"
+                if safe_title:
+                    folder_name += f" - {safe_title}"
+                
+                out_path = Path(self.base_dir) / folder_name
+
                 if self.site == "baozimh":
+<<<<<<< HEAD
                     urls = get_baozimh_images(chap['id'])
                 elif self.site == "happymh":
                     manga_url = f"{HAPPYMH_BASE}/manga/{self.manga_id}"
                     urls = get_happymh_images(chap['id'], manga_url=manga_url)
+=======
+                    # Baozimh Download
+                    if not out_path.exists():
+                        out_path.mkdir(parents=True, exist_ok=True)
+
+                    current_chapter_total = 0
+                    for event in BAOZI_CLIENT.download_chapter_generator(chap['id'], str(out_path)):
+                        if not self._is_running: break
+                        
+                        if event.type == 'start':
+                            current_chapter_total = event.total
+                            self.progress.emit(f"Ch {ch_num}: {event.message}")
+                        elif event.type == 'progress':
+                            self.progress.emit(f"Ch {ch_num}: {event.message}")
+                            if current_chapter_total > 0:
+                                chapter_progress = event.current / current_chapter_total
+                                total_progress = ((i + chapter_progress) / total_chaps) * 100
+                                self.percent.emit(int(total_progress))
+                        elif event.type == 'error':
+                            self.progress.emit(f"Error Ch {ch_num}: {event.message}")
+                        elif event.type == 'message':
+                            self.progress.emit(f"Ch {ch_num}: {event.message}")
+                        elif event.type == 'complete':
+                            self.progress.emit(f"Ch {ch_num}: {event.message}")
+                            
+>>>>>>> experiment-bz
                 else:
+                    # MangaDex Download
+                    urls = []
                     chap_info = get_chapter_info(chap['id'])
                     athome = get_at_home_base(chap['id'])
                     base = athome.get("baseUrl")
@@ -1201,6 +1190,7 @@ class DownloadWorker(QThread):
                     
                     urls = craft_image_urls(base, attrs, use_data_saver=self.use_saver)
 
+<<<<<<< HEAD
                 if not urls:
                     self.progress.emit(f"No images for Ch {ch_num}")
                     continue
@@ -1257,24 +1247,62 @@ class DownloadWorker(QThread):
                                         f.write(chunk)
                         except Exception as e:
                             self.progress.emit(f"Error page {j}: {e}")
+=======
+                    if not urls:
+                        self.progress.emit(f"No images for Ch {ch_num}")
+                        continue
+                    
+                    out_path.mkdir(parents=True, exist_ok=True)
+                    
+                    total_imgs = len(urls)
+                    session = requests.Session()
+                    for j, url in enumerate(urls, 1):
+                        if not self._is_running: break
+                        fname = f"{j:03d}.jpg"
+                        if "." in url:
+                            parts = url.split(".")
+                            ext = parts[-1].split("?")[0]
+                            if len(ext) <= 4: fname = f"{j:03d}.{ext}"
+                        
+                        dest = out_path / fname
+                        if not dest.exists():
+                            try:
+                                with session.get(url, stream=True, timeout=30) as r:
+                                    r.raise_for_status()
+                                    with open(dest, "wb") as f:
+                                        for chunk in r.iter_content(8192):
+                                            f.write(chunk)
+                            except Exception as e:
+                                self.progress.emit(f"Error img {j}: {e}")
+                        
+                        # Update progress for MangaDex as well
+                        if total_imgs > 0:
+                            chapter_progress = j / total_imgs
+                            total_progress = ((i + chapter_progress) / total_chaps) * 100
+                            self.percent.emit(int(total_progress))
+>>>>>>> experiment-bz
                 
+                if not self._is_running: break
+
+                # Common Metadata
                 meta = {
                     "chapter": chap,
                     "downloaded_at": int(time.time())
                 }
-                with open(out_path / "metadata.json", "w", encoding="utf-8") as f:
-                    json.dump(meta, f, indent=2)
+                if out_path.exists():
+                    with open(out_path / "metadata.json", "w", encoding="utf-8") as f:
+                        json.dump(meta, f, indent=2)
                 
-                              
-                if self.make_cbz:
-                    cbz_path = Path(self.base_dir) / f"{folder_name}.cbz"
-                    self.progress.emit(f"Creating CBZ: {cbz_path.name}")
-                    with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for item in out_path.glob("*"):
-                            if item.is_file():
-                                zf.write(item, arcname=item.name)
-                                    
-                    shutil.rmtree(out_path)
+                    # Common CBZ
+                    if self.make_cbz:
+                        cbz_path = Path(self.base_dir) / f"{folder_name}.cbz"
+                        self.progress.emit(f"Creating CBZ: {cbz_path.name}")
+                        with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for item in out_path.glob("*"):
+                                if item.is_file():
+                                    zf.write(item, arcname=item.name)
+                                        
+                        shutil.rmtree(out_path)
 
             except Exception as e:
                 self.error.emit(f"Error Ch {ch_num}: {e}")
@@ -2077,9 +2105,6 @@ class ModernMangaDexGUI(QMainWindow):
             self.site_combo.setCurrentText("Happymh")
             fake_url = f"https://m.happymh.com/manga/{mid}"
             self.search_input.setText(fake_url)
-        elif source == 'rawkuma':
-            self.site_combo.setCurrentText("Rawkuma")
-            self.search_input.setText(mid) # mid is the full URL for Rawkuma
         else:
             self.site_combo.setCurrentText("MangaDex")
             fake_url = f"https://mangadex.org/title/{mid}"

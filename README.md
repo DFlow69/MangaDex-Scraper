@@ -5,9 +5,6 @@ A feature-rich, dual-interface (GUI & TUI) application to search, view, and down
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 
-## Baozi API Scraping
-- If you want to be able to scrape chapters that are locked on the baozi website use the `experiment-bz` branch.
-
 ## Features
 
 - **Dual Interface**:
@@ -15,7 +12,10 @@ A feature-rich, dual-interface (GUI & TUI) application to search, view, and down
   - **TUI**: Keyboard-centric terminal interface for fast, lightweight usage.
 - **Multi-Site Support**:
   - **MangaDex**: Default provider with full metadata and search.
-  - **Baozimh**: Specialized for Chinese manga with smart image extraction.
+  - **Baozimh**: Specialized for Chinese manga.
+    - **Advanced Bypass**: Automatically detects and bypasses "App Only" / "Locked" chapters.
+    - **Placeholder Detection**: Identifies incomplete chapters and fetches full content from alternate API endpoints.
+    - **Brute-Force Fallback**: Robust recovery mechanism for CDN image retrieval.
   - **Happymh**: Advanced Cloudflare bypass and multi-fallback image extraction.
 - **Advanced Scraping & Bypassing**:
   - **Cloudflare Bypass**: Multi-layered fallback system using `curl_cffi`, `nodriver`, `SeleniumBase UC Mode`, and `Playwright`.
@@ -31,7 +31,7 @@ A feature-rich, dual-interface (GUI & TUI) application to search, view, and down
   - **AniList Bridge**: Automatic English-to-Chinese title lookup for accurate searching on Chinese sites.
 - **Flexible Downloading**:
   - **CBZ Archiving**: Option to save chapters as `.cbz` files.
-  - **Data Saver**: Option to use compressed images to save bandwidth.
+  - **Data Saver**: Option to use compressed images to save bandwidth (MangaDex only).
   - **Interactive Selection**: Pick specific chapters manually or by range.
   - **Group Filtering**: Filter chapters by Scanlation Group.
 - **Resilient**:
