@@ -24,6 +24,8 @@ try:
     from selenium.webdriver.chrome.options import Options as SeleniumOptions
     from selenium.webdriver.chrome.service import Service as ChromeService
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
     from webdriver_manager.chrome import ChromeDriverManager
     selenium_available = True
 except ImportError:
@@ -1160,8 +1162,9 @@ class DownloadWorker(QThread):
             except:
                 pass
 
-    def download_with_selenium(self, img_url, output_path):
+    def download_chapter_happymh(self, chapter_url, out_path, ch_num, i, total_chaps, chap):
         if not selenium_available:
+            self.progress.emit("Selenium not available for Happymh extraction")
             return False
             
         if not self._selenium_driver:
@@ -1169,42 +1172,130 @@ class DownloadWorker(QThread):
             opts.add_argument("--headless=new")
             opts.add_argument("--no-sandbox")
             opts.add_argument("--disable-dev-shm-usage")
-            opts.add_argument("--disable-blink-features=AutomationControlled")
+            # Cloudflare Bypass Options
+            opts.add_argument('--disable-blink-features=AutomationControlled')
             opts.add_experimental_option("excludeSwitches", ["enable-automation"])
             opts.add_experimental_option('useAutomationExtension', False)
             
             service = ChromeService(ChromeDriverManager().install())
             self._selenium_driver = webdriver.Chrome(service=service, options=opts)
             self._selenium_driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            self._selenium_driver.set_page_load_timeout(30)
+            self._selenium_driver.set_page_load_timeout(60)
 
         try:
-            self._selenium_driver.get(img_url)
+            if self.debug_mode: print(f"DEBUG: Loading chapter page: {chapter_url}")
+            self.progress.emit(f"Bypassing Cloudflare for Chapter {ch_num}...")
+            self._selenium_driver.get(chapter_url)
+            
+            # Wait for Cloudflare/JS
+            WebDriverWait(self._selenium_driver, 30).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+            # User specifically asked for 10s wait for JS challenges
             import time
-            time.sleep(3)  # Wait for image to load
+            time.sleep(10)
             
-            # Screenshot the WHOLE PAGE (direct image URLs show just the image)
-            # Fix: get_screenshot_as_png is a method, not a property in standard selenium
-            # but user reported 'bytes' object is not callable, implying it was treated as a property?
-            # Actually, driver.get_screenshot_as_png() IS a method. 
-            # However, the user's suggested fix says: img_data = driver.get_screenshot_as_png()  # NO PARENTHESES!
-            # This is confusing because in Selenium Python, it is a method.
-            # Wait, looking at the error: DEBUG: Selenium failed: 'bytes' object is not callable
-            # This happens if you try to call something that is already bytes.
-            # I will use the user's provided logic which worked for them.
-            img_data = self._selenium_driver.get_screenshot_as_png
-            if callable(img_data):
-                img_data = img_data()
+            # Extract scan0, scan1... up to 50
+            urls = []
+            for k in range(50):
+                try:
+                    img = self._selenium_driver.find_element(By.ID, f"scan{k}")
+                    src = img.get_attribute("src")
+                    if src and src.startswith("http"):
+                        urls.append(src)
+                except:
+                    # If we can't find scan{k}, we've reached the end of the chapter
+                    break
             
-            # Save as JPG
-            import io
-            image = Image.open(io.BytesIO(img_data))
-            image.convert("RGB").save(output_path, "JPEG", quality=95)
-            if self.debug_mode: print(f"DEBUG: Selenium SUCCESS: {output_path}")
+            if not urls:
+                # Fallback to manual file parser if Selenium found no scans
+                if self.debug_mode: print("DEBUG: Selenium found no scans, falling back to manual file parser")
+                manga_url = f"{HAPPYMH_BASE}/manga/{self.manga_id}"
+                urls = get_happymh_images(chap['id'], manga_url=manga_url)
+
+            if not urls:
+                self.progress.emit(f"No images found for Ch {ch_num}")
+                return False
+
+            if not out_path.exists():
+                out_path.mkdir(parents=True, exist_ok=True)
+
+            total_imgs = len(urls)
+            session = get_happymh_session(impersonate="chrome124")
+
+            for j, url in enumerate(urls, 1):
+                if not self._is_running: break
+                
+                fname = f"{j:03d}.jpg"
+                if "." in url:
+                    parts = url.split(".")
+                    ext = parts[-1].split("?")[0]
+                    if len(ext) <= 4: fname = f"{j:03d}.{ext}"
+                
+                dest = out_path / fname
+                if not dest.exists():
+                    try:
+                        # Random delay between requests
+                        import random
+                        delay = random.uniform(1.0, 3.0)
+                        if self.debug_mode: print(f"DEBUG: Sleeping for {delay:.2f}s...")
+                        time.sleep(delay)
+
+                        get_kwargs = {"stream": True, "timeout": 30}
+                        # Use existing curl_cffi logic
+                        impersonate_targets = ["chrome124", "chrome120", "chrome131", "edge101"]
+                        target = impersonate_targets[j % len(impersonate_targets)]
+                        get_kwargs["impersonate"] = target
+                        
+                        if self.use_proxy:
+                            proxy = self.proxy_list[j % len(self.proxy_list)]
+                            get_kwargs["proxies"] = {"http": proxy, "https": proxy}
+                        
+                        headers = {
+                            "Referer": "https://m.happymh.com/",
+                            "User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{target.replace('chrome', '')}.0.0.0 Safari/537.36" if 'chrome' in target else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                            "Accept": "image/avif,image/webp,*/*",
+                            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                            "Accept-Encoding": "gzip, deflate, br"
+                        }
+                        get_kwargs["headers"] = headers
+                        
+                        if self.debug_mode:
+                            print(f"DEBUG: Ch {ch_num} Page {j} -> {url}")
+                            print(f"DEBUG: Using impersonate: {target}")
+                        
+                        r = session.get(url, **get_kwargs)
+                        try:
+                            if self.debug_mode: print(f"DEBUG: Response status: {r.status_code}")
+                            
+                            if r.status_code == 403:
+                                # Retry without Referer
+                                if self.debug_mode: print("DEBUG: Got 403, retrying without Referer...")
+                                retry_headers = headers.copy()
+                                retry_headers.pop("Referer", None)
+                                get_kwargs["headers"] = retry_headers
+                                r.close()
+                                r = session.get(url, **get_kwargs)
+                                if self.debug_mode: print(f"DEBUG: Retry Response status: {r.status_code}")
+                            
+                            r.raise_for_status()
+                            with open(dest, "wb") as f:
+                                for chunk in r.iter_content(8192):
+                                    f.write(chunk)
+                        finally:
+                            if hasattr(r, 'close'): r.close()
+                    except Exception as e:
+                        self.progress.emit(f"Error page {j}: {e}")
+
+                # Update progress
+                if total_imgs > 0:
+                    chapter_progress = j / total_imgs
+                    total_progress = ((i + chapter_progress) / total_chaps) * 100
+                    self.percent.emit(int(total_progress))
+            
             return True
-            
         except Exception as e:
-            if self.debug_mode: print(f"DEBUG: Selenium failed: {e}")
+            if self.debug_mode: print(f"DEBUG: Happymh Hybrid failed: {e}")
             return False
 
     def run(self):
@@ -1257,8 +1348,14 @@ class DownloadWorker(QThread):
                     continue
 
                 elif self.site == "happymh":
-                    manga_url = f"{HAPPYMH_BASE}/manga/{self.manga_id}"
-                    urls = get_happymh_images(chap['id'], manga_url=manga_url)
+                    if self.use_selenium:
+                        chapter_url = f"{HAPPYMH_BASE}{chap['id']}" if chap['id'].startswith("/") else chap['id']
+                        if self.download_chapter_happymh(chapter_url, out_path, ch_num, i, total_chaps, chap):
+                            self._finalize_chapter(out_path, folder_name, chap)
+                        continue
+                    else:
+                        manga_url = f"{HAPPYMH_BASE}/manga/{self.manga_id}"
+                        urls = get_happymh_images(chap['id'], manga_url=manga_url)
                 else:
                     # MangaDex Download
                     urls = []
@@ -1312,19 +1409,15 @@ class DownloadWorker(QThread):
                             continue
 
                         try:
-                            if self.use_selenium and self.site == "happymh":
-                                if not self.download_with_selenium(url, str(dest)):
-                                    raise Exception("Selenium download failed")
-                            else:
-                                # Add a random delay between requests to avoid bot detection
-                                if j > 1:
-                                    delay = random.uniform(1.0, 3.0)
-                                    if self.debug_mode: print(f"DEBUG: Sleeping for {delay:.2f}s...")
-                                    time.sleep(delay)
+                            # Add a random delay between requests to avoid bot detection
+                            if j > 1:
+                                delay = random.uniform(1.0, 3.0)
+                                if self.debug_mode: print(f"DEBUG: Sleeping for {delay:.2f}s...")
+                                time.sleep(delay)
 
-                                get_kwargs = {"stream": True, "timeout": 30}
-                                if self.site == "happymh" and requests_cf:
-                                    # Rotate impersonation and UA per request
+                            get_kwargs = {"stream": True, "timeout": 30}
+                            if self.site == "happymh" and requests_cf:
+                                # Rotate impersonation and UA per request
                                     impersonate_targets = ["chrome124", "chrome120", "chrome131", "edge101"]
                                     target = impersonate_targets[j % len(impersonate_targets)]
                                     get_kwargs["impersonate"] = target
