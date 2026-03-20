@@ -1,44 +1,34 @@
 # MultiMangaScraper & GUI
 
-A feature-rich, dual-interface (GUI & TUI) application to search, view, and download manga chapters from **MangaDex**, **Baozimh**, **Happymh** and **NewToki**.
+A feature-rich, industrial-grade application to search, view, and download manga chapters from **MangaDex**, **Baozimh**, **Happymh**, and **NewToki**. Featuring a professional "cinematic" dark theme and advanced anti-detection capabilities.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 
-## Features
+## 🚀 Key Features
 
-- **Dual Interface**:
-  - **GUI**: Modern, scalable Qt-based interface with dark mode, cover previews, and advanced filtering.
-- **Multi-Site Support**:
-  - **MangaDex**: Default provider with full metadata and search.
-  - **Baozimh**: Specialized for Chinese manga.
-    - **Advanced Bypass**: Automatically detects and bypasses "App Only" / "Locked" chapters.
-    - **Placeholder Detection**: Identifies incomplete chapters and fetches full content from alternate API endpoints.
-    - **Brute-Force Fallback**: Robust recovery mechanism for CDN image retrieval.
-  - **Happymh**: Advanced Cloudflare bypass and multi-fallback image extraction.
-- **Advanced Scraping & Bypassing**:
-  - **Cloudflare Bypass**: Multi-layered fallback system using `curl_cffi`, `nodriver`, `SeleniumBase UC Mode`, and `Playwright`.
-  - **Image Extraction**: Supports standard tags, JSON metadata, network interception, and direct `<canvas>` decoding.
-  - **Referer Spoofing**: Automatically handles site-specific referer requirements for image servers.
-- **Library & Tracking**:
-  - **Library**: Save your favorite manga to a local library.
-  - **Update Checker**: Quickly see if new chapters are available.
-  - **Settings**: Persistent preferences for download path, data saver, and more.
-- **Smart Search**: 
-  - Search by title (English/Romaji support).
-  - **URL Import**: Paste a URL from any supported site to instantly load a manga.
-  - **AniList Bridge**: Automatic English-to-Chinese title lookup for accurate searching on Chinese sites.
+- **Professional UI/UX**:
+  - **Cinematic Dark Theme**: A modern, content-forward interface with custom widgets, smooth transitions, and a deep-dark palette.
+  - **Custom Widgets**: iOS-style toggle switches, interactive language chips, and a download button with an integrated progress overlay.
+  - **Scalable Previews**: High-quality manga cover art with smooth scaling and shimmer loading effects.
+- **Multi-Source Support**:
+  - **MangaDex**: Default provider with full metadata, search, and data-saver support.
+  - **Baozimh**: Specialized for Chinese manga with automated "App Only" chapter bypassing and placeholder detection.
+  - **Happymh**: Advanced Cloudflare bypass using SeleniumBase UC Mode and AVIF-to-JPG conversion.
+  - **NewToki**: Robust Korean source support with human-like navigation, auto-scrolling for lazy-loaded images, and interactive CAPTCHA handling.
+- **Advanced Anti-Detection**:
+  - **Human Simulation**: JS-simulated mouse movements, random delays, and viewport resizing to mimic real user behavior.
+  - **SeleniumBase UC**: Undetected-chromedriver integration to bypass modern bot protections like Cloudflare and 403 blocks.
+  - **Cookie Transfer**: Seamlessly transfers `cf_clearance` cookies from browser sessions to high-speed downloaders.
+- **Library & Smart Tracking**:
+  - **Library Management**: Save your favorite series to a local library with one-click access.
+  - **Update Checker**: Automatically identifies when new chapters are available for your tracked manga.
 - **Flexible Downloading**:
-  - **CBZ Archiving**: Option to save chapters as `.cbz` files.
-  - **Data Saver**: Option to use compressed images to save bandwidth (MangaDex only).
-  - **Interactive Selection**: Pick specific chapters manually or by range.
-  - **Group Filtering**: Filter chapters by Scanlation Group.
-- **Resilient**:
-  - Threaded downloads to keep the UI responsive.
-  - Automatic retry on failed pages.
-  - Rate limit handling.
+  - **Format Support**: Automatically converts modern formats (AVIF) to standard JPEGs for maximum compatibility.
+  - **CBZ Archiving**: Pack your chapters into `.cbz` files automatically.
+  - **Filtering**: Select specific chapter ranges or filter by scanlation group and language.
 
-## Installation
+## 📦 Installation
 
 1.  **Clone the repository**:
     ```bash
@@ -47,47 +37,44 @@ A feature-rich, dual-interface (GUI & TUI) application to search, view, and down
     ```
 
 2.  **Install Dependencies**:
-    You can run the provided PowerShell script:
+    It is recommended to use the provided batch script for a quick setup:
     ```powershell
-    ./install_requirements.ps1
+    ./install.bat
     ```
-    Or install manually via pip:
+    Or manually install via pip:
     ```bash
     pip install -r requirements.txt
     ```
 
-3.  **Setup Browsers (for Happymh bypass)**:
-    ```bash
-    playwright install chromium
-    ```
+3.  **Setup Chrome**:
+    Ensure you have Google Chrome installed. For **NewToki**, the app currently targets Chrome version 146 (or the latest compatible `undetected-chromedriver`).
 
-## Usage
+## 📖 Usage
 
-> [!TIP]
-> **Best Practice**: For maximum reliability (especially with **Happymh**), it is highly recommended to paste the **exact series URL** directly into the search bar instead of searching by title. This bypasses search result obfuscation and goes straight to the chapter list.
+> [!IMPORTANT]
+> **MANDATORY FOR HAPPYMH & NEWTOKI**: For these sources, you **MUST** paste the absolute series URL (e.g., `https://m.happymh.com/manga/berserk`) directly into the search bar. Searching by title for these specific sources is unreliable due to strict bot protection and search obfuscation.
 
-### Graphical User Interface (GUI)
-- **Python**:
+### Launching the App
+- **GUI (Recommended)**:
   ```bash
   python md_gui.py
   ```
 
-### Terminal User Interface (TUI)
-- **Batch**: Double-click `run_tui.bat`
-- **Python**:
-  ```bash
-  python md.py
-  ```
+### Manual CAPTCHA Handling
+For sources like NewToki, if a CAPTCHA or Cloudflare "Just a moment" screen appears:
+1.  A dialog will pop up in the app.
+2.  Solve the challenge manually in the browser window that opens.
+3.  Click **"Solved"** in the app to resume the automated extraction.
 
-## Building from Source
+## 🛠️ Building from Source
 
 To create a standalone executable:
 
 ```bash
 pip install pyinstaller
-pyinstaller --clean --onefile --noconsole --name MangaDexGUI md_gui.py
+pyinstaller --clean --onefile --noconsole --name MultiMangaScraper md_gui.py
 ```
 
-## Disclaimer
+## 📜 Disclaimer
 
-This tool is for educational purposes and personal use only. Please respect the copyrights of the manga creators and publishers.
+This tool is for educational purposes and personal use only. Please respect the copyrights of the manga creators and publishers. Use responsibly.
