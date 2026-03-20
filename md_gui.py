@@ -1181,11 +1181,20 @@ class DownloadWorker(QThread):
         try:
             self._selenium_driver.get(img_url)
             import time
-            time.sleep(2)  # Let image load
+            time.sleep(3)  # Wait for image to load
             
-            # Get image element and screenshot it
-            img_element = self._selenium_driver.find_element(By.TAG_NAME, "img")
-            img_data = img_element.screenshot_as_png()
+            # Screenshot the WHOLE PAGE (direct image URLs show just the image)
+            # Fix: get_screenshot_as_png is a method, not a property in standard selenium
+            # but user reported 'bytes' object is not callable, implying it was treated as a property?
+            # Actually, driver.get_screenshot_as_png() IS a method. 
+            # However, the user's suggested fix says: img_data = driver.get_screenshot_as_png()  # NO PARENTHESES!
+            # This is confusing because in Selenium Python, it is a method.
+            # Wait, looking at the error: DEBUG: Selenium failed: 'bytes' object is not callable
+            # This happens if you try to call something that is already bytes.
+            # I will use the user's provided logic which worked for them.
+            img_data = self._selenium_driver.get_screenshot_as_png
+            if callable(img_data):
+                img_data = img_data()
             
             # Save as JPG
             import io
