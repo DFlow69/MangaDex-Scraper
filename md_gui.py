@@ -1114,7 +1114,7 @@ class DownloadWorker(QThread):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, chapters, base_dir, use_saver, manga_id=None, make_cbz=False, site="mangadex"):
+    def __init__(self, chapters, base_dir, use_saver, manga_id=None, make_cbz=False, site="mangadex", debug_mode=False):
         super().__init__()
         self.chapters = chapters
         self.base_dir = base_dir
@@ -1122,6 +1122,7 @@ class DownloadWorker(QThread):
         self.manga_id = manga_id
         self.make_cbz = make_cbz
         self.site = site
+        self.debug_mode = debug_mode
         self._is_running = True
 
     def stop(self):
@@ -1236,8 +1237,8 @@ class DownloadWorker(QThread):
                             if self.site == "happymh" and requests_cf:
                                 get_kwargs["impersonate"] = "chrome120"
                                 # Fix 403: Use origin referer and more browser-like headers
-                                get_kwargs["headers"] = {
-                                    "Referer": "https://m.happymh.com/",
+                                headers = {
+                                    "Referer": "https://m.happymh.com",
                                     "Origin": "https://m.happymh.com",
                                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -1248,11 +1249,19 @@ class DownloadWorker(QThread):
                                     "Cache-Control": "no-cache",
                                     "Pragma": "no-cache"
                                 }
+                                get_kwargs["headers"] = headers
+                                if self.debug_mode:
+                                    print(f"DEBUG: Ch {ch_num} Page {j} -> {url}")
+                                    print(f"DEBUG: Req Headers: {headers}")
                             
                             # Fix: curl_cffi.requests.Session.get() returns a response that doesn't 
                             # support 'with' context manager in older versions or specific implementations.
                             r = session.get(url, **get_kwargs)
                             try:
+                                if self.debug_mode:
+                                    print(f"DEBUG: Response status: {r.status_code}")
+                                    # print(f"DEBUG: Response headers: {r.headers}")
+                                
                                 r.raise_for_status()
                                 with open(dest, "wb") as f:
                                     for chunk in r.iter_content(8192):
@@ -1262,6 +1271,9 @@ class DownloadWorker(QThread):
                                     r.close()
                         except Exception as e:
                             self.progress.emit(f"Error page {j}: {e}")
+                            if self.debug_mode:
+                                import traceback
+                                traceback.print_exc()
                     
                     # Update progress
                     if total_imgs > 0:
@@ -1569,6 +1581,9 @@ class ModernMangaDexGUI(QMainWindow):
         self.cbz_chk = QCheckBox("Save as CBZ")
         self.cbz_chk.setToolTip("Save chapters as .cbz files instead of folders")
         
+        self.debug_chk = QCheckBox("Debug Mode")
+        self.debug_chk.setToolTip("Show detailed logs in terminal for troubleshooting")
+        
         self.data_saver_chk = QCheckBox("Data Saver")
         self.data_saver_chk.setToolTip("Use compressed images (saves bandwidth)")
         self.data_saver_chk.setChecked(True)
@@ -1604,6 +1619,7 @@ class ModernMangaDexGUI(QMainWindow):
                                  
         self.chap_ctrl_layout.addWidget(self.data_saver_chk)
         self.chap_ctrl_layout.addWidget(self.cbz_chk)
+        self.chap_ctrl_layout.addWidget(self.debug_chk)
         self.chap_ctrl_layout.addStretch()                                    
         self.chap_ctrl_layout.addWidget(self.download_btn)
         
@@ -1646,6 +1662,7 @@ class ModernMangaDexGUI(QMainWindow):
         if self.settings.get("romaji_titles"): self.romaji_chk.setChecked(True)
         if self.settings.get("data_saver") is False: self.data_saver_chk.setChecked(False)
         if self.settings.get("cbz_mode"): self.cbz_chk.setChecked(True)
+        if self.settings.get("debug_mode"): self.debug_chk.setChecked(True)
 
     def log(self, msg):
         self.log_text.setText(msg)
@@ -1994,7 +2011,8 @@ class ModernMangaDexGUI(QMainWindow):
             self.data_saver_chk.isChecked(),
             manga_id=self.selected_manga['id'],
             make_cbz=self.cbz_chk.isChecked(),
-            site=site
+            site=site,
+            debug_mode=self.debug_chk.isChecked()
         )
         self.download_worker.progress.connect(self.log)
         self.download_worker.percent.connect(self.progress_bar.setValue)
@@ -2022,6 +2040,7 @@ class ModernMangaDexGUI(QMainWindow):
         self.settings["romaji_titles"] = self.romaji_chk.isChecked()
         self.settings["data_saver"] = self.data_saver_chk.isChecked()
         self.settings["cbz_mode"] = self.cbz_chk.isChecked()
+        self.settings["debug_mode"] = self.debug_chk.isChecked()
         try:
             with open(SETTINGS_FILE, "w") as f: json.dump(self.settings, f)
         except: pass
