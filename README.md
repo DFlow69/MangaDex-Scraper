@@ -1,6 +1,6 @@
 # MultiMangaScraper & GUI
 
-A feature-rich, dual-interface (GUI & TUI) application to search, view, and download manga chapters from **MangaDex**, **Baozimh**, and **Happymh**.
+A feature-rich, dual-interface (GUI & TUI) application to search, view, and download manga chapters from **MangaDex**, **Baozimh**, **Happymh** and **NewToki**.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
@@ -9,7 +9,6 @@ A feature-rich, dual-interface (GUI & TUI) application to search, view, and down
 
 - **Dual Interface**:
   - **GUI**: Modern, scalable Qt-based interface with dark mode, cover previews, and advanced filtering.
-  - **TUI**: Keyboard-centric terminal interface for fast, lightweight usage.
 - **Multi-Site Support**:
   - **MangaDex**: Default provider with full metadata and search.
   - **Baozimh**: Specialized for Chinese manga.
