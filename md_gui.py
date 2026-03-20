@@ -542,23 +542,25 @@ def fetch_happymh_html(url: str, referer: Optional[str] = None) -> Optional[str]
                 content = f.read()
                 
                 # Based on user instruction:
-                # 1. <ul class="MuiList-root ..."> downwards is the chapter list (manga page)
+                # 1. <ul class="MuiList-root MuiList-padding MuiList-dense css-1ontqvh"> downwards is the chapter list (manga page)
                 # 2. The rest of the file is the images (reader page)
                 
                 if "/manga/" in url:
-                    # We want the chapter list section
-                    start_idx = content.find('<ul class="MuiList-root')
+                    # We want the chapter list section specifically from the provided ul tag
+                    target_ul = '<ul class="MuiList-root MuiList-padding MuiList-dense css-1ontqvh"'
+                    start_idx = content.find(target_ul)
                     if start_idx != -1:
-                        print(f"FORCED: Using CHAPTER LIST section from {research_file}")
+                        print(f"FORCED: Using CHAPTER LIST section (from specific UL) from {research_file}")
                         return content[start_idx:]
                     else:
-                        # Fallback: if we can't find the ul, maybe it's just the whole file
+                        # Fallback: if we can't find the exact UL, search for any MuiList-root
+                        start_idx = content.find('<ul class="MuiList-root')
+                        if start_idx != -1:
+                            print(f"FORCED: Using CHAPTER LIST section (from MuiList-root) from {research_file}")
+                            return content[start_idx:]
                         return content
                 elif "/mangaread/" in url:
                     # We want the image section
-                    # The user said "the rest of the file is the images"
-                    # But line 1 usually contains the reader images.
-                    # We'll return the whole file so get_happymh_images can scan it.
                     print(f"FORCED: Using IMAGE section from {research_file}")
                     return content
                 else:
@@ -667,8 +669,13 @@ def fetch_chapters_happymh(manga_id: str) -> List[dict]:
     chapters = []
     
     # 1. Try standard a tags and elements with data-href
-    # Based on research file, chapters can be in <li> or <div> with data-href
-    links = soup.select("a[href*='/mangaread/'], *[data-href*='/mangaread/']")
+    # Actual chapters are usually MuiListItemButton links or list items
+    # We want to avoid parent containers or navigation headers
+    links = soup.select("a[href*='/mangaread/'], div.MuiListItemButton-root[data-href*='/mangaread/']")
+    
+    # Fallback to broader selector only if nothing found
+    if not links:
+        links = soup.select("a[href*='/mangaread/'], *[data-href*='/mangaread/']")
     
     # 2. Try JSON in scripts if too few links
     if len(links) < 2:
@@ -708,30 +715,48 @@ def fetch_chapters_happymh(manga_id: str) -> List[dict]:
         # In the research file, href is like /mangaread/manga-id/chapter-id
         if manga_id not in href and "/mangaread/" not in href: continue
         
-        # --- NEW: Filter out UI navigation buttons ---
+        # --- NEW: Filter out UI navigation buttons and unrelated links ---
         # These buttons often have /mangaread/ links but are not actual chapters
+        # Use a more comprehensive list of UI words to skip
         link_text_all = link.get_text(" ", strip=True)
-        if any(x in link_text_all for x in ["下一话", "上一话", "吐槽", "收藏", "问题反馈", "返回"]):
-            continue
+        ui_keywords = ["下一话", "上一话", "吐槽", "收藏", "问题反馈", "返回", "共", "章节", "改变排序", "目录"]
+        if any(x in link_text_all for x in ui_keywords):
+            # If the text is *exactly* a chapter name like "第40话" but also has these words,
+            # we should be careful. But usually these buttons have "下一话" as their ONLY text.
+            # If the text contains "吐槽", it's definitely a button.
+            if "吐槽" in link_text_all or "收藏" in link_text_all:
+                continue
             
-        seen_ids.add(href)
-        
+        # Also check if it's inside a navigation-like container (like a Fab or standard Button)
+        classes = link.get("class", [])
+        if any(c in classes for c in ["MuiFab-root", "MuiButton-contained", "MuiButton-root", "css-1ppzpe9"]):
+            # Actual chapters are usually MuiListItemButton or have css-1nkaicf-alink
+            if "MuiListItemButton-root" not in classes and "css-1nkaicf-alink" not in str(classes):
+                continue
+
         # Extraction logic for title:
         # Check primary Mui text first, then span, then whole link text
+        # We want to be very specific to get ONLY the chapter name
         title_tag = link.select_one(".MuiListItemText-primary") or \
                     link.select_one("span.MuiTypography-root") or \
                     link.select_one("span") or \
                     link.select_one(".mg-chapter-name")
         
-        text = title_tag.get_text(strip=True) if title_tag else link.get_text(" ", strip=True)
-        
-        # If text is empty or too short, try parent container text
-        if not text or len(text) < 2:
-            parent = link.find_parent("li") or link.find_parent("div")
-            if parent:
-                text = parent.get_text(" ", strip=True)
+        # If title_tag is the whole link itself, avoid infinite loop or getting too much text
+        if title_tag:
+            text = title_tag.get_text(strip=True)
+        else:
+            # Try to find any text that looks like "第X话" or a number
+            text = link.get_text(" ", strip=True)
 
-        # Extract chapter number: "第40话" -> "40"
+        # Final check: if the extracted text is still one of the bad strings, skip it
+        if not text or any(x in text for x in ["吐槽", "收藏", "问题反馈"]):
+            continue
+
+        seen_ids.add(href)
+
+        # Clean up the text: remove "Ch", "Chapter", "第", "话" etc. for sorting
+        # Also support Chapter 0
         num_match = re.search(r'(?:第|Ch|Chapter\s*)?(\d+(?:\.\d+)?)', text)
         chap_num = num_match.group(1) if num_match else "0"
         
