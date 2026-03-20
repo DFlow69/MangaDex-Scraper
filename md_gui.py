@@ -1233,14 +1233,20 @@ class DownloadWorker(QThread):
                             continue
 
                         try:
+                            # Add a small delay between requests to avoid bot detection
+                            if j > 1:
+                                import time
+                                time.sleep(1.0)
+
                             get_kwargs = {"stream": True, "timeout": 30}
                             if self.site == "happymh" and requests_cf:
-                                get_kwargs["impersonate"] = "chrome120"
-                                # Fix 403: Use origin referer and more browser-like headers
+                                # Use a more recent impersonation target and User-Agent
+                                get_kwargs["impersonate"] = "chrome124"
+                                # Fix 403: Use origin referer and a modern, current Chrome User-Agent
                                 headers = {
-                                    "Referer": "https://m.happymh.com",
+                                    "Referer": "https://m.happymh.com/",
                                     "Origin": "https://m.happymh.com",
-                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
                                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                                     "Sec-Fetch-Dest": "image",
@@ -1261,11 +1267,14 @@ class DownloadWorker(QThread):
                                 if self.debug_mode:
                                     print(f"DEBUG: Response status: {r.status_code}")
                                 
-                                # Retry logic for 403: some strict CDNs prefer NO referer
+                                # Retry logic for 403: some strict CDNs prefer NO referer or different header combos
                                 if r.status_code == 403 and self.site == "happymh":
-                                    if self.debug_mode: print("DEBUG: Got 403, retrying without Referer...")
-                                    get_kwargs["headers"].pop("Referer", None)
-                                    get_kwargs["headers"].pop("Origin", None)
+                                    if self.debug_mode: print("DEBUG: Got 403, retrying with simplified headers...")
+                                    # Try without Referer/Origin first
+                                    retry_headers = headers.copy()
+                                    retry_headers.pop("Referer", None)
+                                    retry_headers.pop("Origin", None)
+                                    get_kwargs["headers"] = retry_headers
                                     r.close()
                                     r = session.get(url, **get_kwargs)
                                     if self.debug_mode: print(f"DEBUG: Retry Response status: {r.status_code}")
@@ -1586,52 +1595,47 @@ class ModernMangaDexGUI(QMainWindow):
         self.btn_range.clicked.connect(self.select_chapter_range)
         
                                                
+        self.chap_ctrl_layout.addWidget(self.btn_select_all)
+        self.chap_ctrl_layout.addWidget(self.btn_deselect_all)
+        self.chap_ctrl_layout.addWidget(self.btn_invert)
+        self.chap_ctrl_layout.addWidget(self.btn_filter_group)
+        
+        line = QFrame()
+        line.setFrameShape(QFrame.VLine)
+        line.setFrameShadow(QFrame.Sunken)
+        self.chap_ctrl_layout.addWidget(line)
+        
+        self.chap_ctrl_layout.addWidget(QLabel("Range:"))
+        self.chap_ctrl_layout.addWidget(self.range_start)
+        self.chap_ctrl_layout.addWidget(QLabel("-"))
+        self.chap_ctrl_layout.addWidget(self.range_end)
+        self.chap_ctrl_layout.addWidget(self.btn_range)
+        self.chap_ctrl_layout.addStretch()
+
+        # Options Layout (Checkboxes)
+        self.options_layout = QHBoxLayout()
+        self.data_saver_chk = QCheckBox("Data Saver")
+        self.data_saver_chk.setToolTip("Use compressed images (saves bandwidth)")
+        self.data_saver_chk.setChecked(True)
+        
         self.cbz_chk = QCheckBox("Save as CBZ")
         self.cbz_chk.setToolTip("Save chapters as .cbz files instead of folders")
         
         self.debug_chk = QCheckBox("Debug Mode")
         self.debug_chk.setToolTip("Show detailed logs in terminal for troubleshooting")
         
-        self.data_saver_chk = QCheckBox("Data Saver")
-        self.data_saver_chk.setToolTip("Use compressed images (saves bandwidth)")
-        self.data_saver_chk.setChecked(True)
+        self.options_layout.addWidget(self.data_saver_chk)
+        self.options_layout.addWidget(self.cbz_chk)
+        self.options_layout.addWidget(self.debug_chk)
+        self.options_layout.addStretch()
         
         self.download_btn = QPushButton("Download Selected")
+        self.download_btn.setStyleSheet("background-color: #28a745; min-width: 150px; padding: 10px;")
         self.download_btn.clicked.connect(self.start_download)
-                                                                                           
-        
-        self.chap_ctrl_layout.addWidget(self.btn_select_all)
-        self.chap_ctrl_layout.addWidget(self.btn_deselect_all)
-        self.chap_ctrl_layout.addWidget(self.btn_invert)
-        self.chap_ctrl_layout.addWidget(self.btn_filter_group)
-        
-                   
-        line = QFrame()
-        line.setFrameShape(QFrame.VLine)
-        line.setFrameShadow(QFrame.Sunken)
-        self.chap_ctrl_layout.addWidget(line)
-        
-                      
-        self.chap_ctrl_layout.addWidget(QLabel("Range:"))
-        self.chap_ctrl_layout.addWidget(self.range_start)
-        self.chap_ctrl_layout.addWidget(QLabel("-"))
-        self.chap_ctrl_layout.addWidget(self.range_end)
-        self.chap_ctrl_layout.addWidget(self.btn_range)
-        
-                     
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.VLine)
-        line2.setFrameShadow(QFrame.Sunken)
-        self.chap_ctrl_layout.addWidget(line2)
-
-                                 
-        self.chap_ctrl_layout.addWidget(self.data_saver_chk)
-        self.chap_ctrl_layout.addWidget(self.cbz_chk)
-        self.chap_ctrl_layout.addWidget(self.debug_chk)
-        self.chap_ctrl_layout.addStretch()                                    
-        self.chap_ctrl_layout.addWidget(self.download_btn)
         
         self.right_layout.addLayout(self.chap_ctrl_layout)
+        self.right_layout.addLayout(self.options_layout)
+        self.right_layout.addWidget(self.download_btn)
 
                                                         
         self.chapter_tree = QTreeWidget()
