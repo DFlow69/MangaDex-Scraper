@@ -535,68 +535,28 @@ def fetch_happymh_response(url: str, referer: Optional[str] = None):
 
 def fetch_happymh_html(url: str, referer: Optional[str] = None) -> Optional[str]:
     # Check if user provided a research file first (Manual Override)
+    # The user wants this to be the primary detection method.
     research_file = Path("baozimh_research/happymh.txt")
     if research_file.exists():
         try:
             with open(research_file, "r", encoding="utf-8") as f:
                 content = f.read()
+                # Check if the file is effectively the chapter/manga page or contains specific content
                 if content and len(content) > 100:
-                    print(f"Using manual research file content for {url}")
+                    print(f"FORCED: Using manual research file content from {research_file}")
                     return content
-        except:
-            pass
+        except Exception as e:
+            print(f"Error reading forced research file: {e}")
 
+    # Only if research file doesn't exist or is empty do we try network requests
     r = fetch_happymh_response(url, referer=referer)
     if r:
         return r.text
     
-    def extract_html(text):
-        if not text: return None
-        match = re.search(r'(<html[\s\S]*</html>)', text, re.IGNORECASE)
-        if match:
-            return match.group(1)
-        return text
-
-    # Fallback 1: nodriver (Fastest browser fallback)
-    try:
-        import subprocess
-        print(f"Trying nodriver fallback for {url}")
-        res = subprocess.run([sys.executable, "fetch_nodriver.py", url], 
-                           capture_output=True, text=True, timeout=60)
-        if res.returncode == 0 and res.stdout:
-            cleaned = extract_html(res.stdout)
-            # Check if nodriver actually bypassed it
-            if cleaned and "嗨皮漫画" in cleaned and "人机验证" not in cleaned:
-                return cleaned
-    except Exception as e:
-        print(f"Nodriver fallback failed: {e}")
-        
-    # Fallback 2: SeleniumBase UC Mode (Most robust)
-    try:
-        import subprocess
-        print(f"Trying SeleniumBase fallback for {url}")
-        res = subprocess.run([sys.executable, "fetch_sb.py", url], 
-                           capture_output=True, text=True, timeout=120)
-        if res.returncode == 0 and res.stdout:
-            cleaned = extract_html(res.stdout)
-            if cleaned and "嗨皮漫画" in cleaned and "人机验证" not in cleaned:
-                return cleaned
-    except Exception as e:
-        print(f"SeleniumBase fallback failed: {e}")
-        
-    # Fallback 3: Playwright (Advanced network interception)
-    try:
-        import subprocess
-        print(f"Trying Playwright fallback for {url}")
-        res = subprocess.run([sys.executable, "fetch_playwright.py", url], 
-                           capture_output=True, text=True, timeout=120)
-        if res.returncode == 0 and res.stdout:
-            cleaned = extract_html(res.stdout)
-            if cleaned and "嗨皮漫画" in cleaned and "人机验证" not in cleaned:
-                return cleaned
-    except Exception as e:
-        print(f"Playwright fallback failed: {e}")
-        
+    # User requested to only use the manual HTML file and avoid browser fallbacks.
+    # Browser fallbacks (nodriver, SeleniumBase, Playwright) are disabled here 
+    # to prevent unwanted resource usage and stick to the provided raw HTML.
+    
     return None
 
 def search_happymh(query: str) -> List[dict]:
