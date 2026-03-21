@@ -25,6 +25,16 @@ class DownloadEvent:
     filepath: str = ""
     data: Any = None
 
+def baozimh_watermark_bypass(img_url):
+    """Remove watermarks from Baozimh app chapters"""
+    pattern = r'^https?://(?:[\w-]+\.)baozicdn\.com/(.+)$'
+    match = re.match(pattern, img_url)
+    if match:
+        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
+        print(f"DEBUG: Watermark bypass → {clean_url}")
+        return clean_url
+    return img_url
+
 class BaozimhClient:
     BASE_URL = "https://www.baozimh.com"
     CDN_DOMAINS = [
@@ -245,6 +255,9 @@ class BaozimhClient:
     def download_image(self, url: str, filepath: str) -> bool:
         """Download a single image."""
         try:
+            # Apply watermark bypass
+            url = baozimh_watermark_bypass(url)
+            
             response = self.session.get(url, stream=True, timeout=10)
             if response.status_code == 200:
                 with open(filepath, 'wb') as f:

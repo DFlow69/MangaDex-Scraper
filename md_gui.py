@@ -249,6 +249,54 @@ HAPPYMH_BASE = "https://m.happymh.com"
 SETTINGS_FILE = "settings.json"
 LIBRARY_FILE = "library.json"
 
+def sort_chapters_newest_first(chapters):
+    """Sort by chapter number DESC (highest first)"""
+    def extract_number(chapter):
+        # Extract number from title or chapter field: "第41话" → 41, "Ch 97" → 97
+        text = str(chapter.get('title', '')) + " " + str(chapter.get('chapter', ''))
+        num_match = re.search(r'(\d+(?:\.\d+)?)', text)
+        try:
+            return float(num_match.group(1)) if num_match else 0.0
+        except:
+            return 0.0
+     
+    return sorted(chapters, key=extract_number, reverse=True)
+
+def extract_newtoki_images_pro(driver):
+    """Community-tested data-* attribute extraction"""
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    img_tags = soup.select("p img")
+     
+    image_urls = []
+    data_pattern = re.compile(r"^data-[a-zA-Z0-9]{1,20}$")
+     
+    for img in img_tags:
+        # PRIORITY: data-* attributes first
+        found_data = False
+        for attr_name, attr_value in img.attrs.items():
+            if data_pattern.match(attr_name) and attr_value.startswith("http"):
+                image_urls.append(attr_value)
+                found_data = True
+                break
+        
+        if not found_data:
+            # FALLBACK: src
+            if img.get('src') and img['src'].startswith("http") and "loading-image.gif" not in img['src']:
+                image_urls.append(img['src'])
+     
+    # Dedupe
+    return list(dict.fromkeys(image_urls))
+
+def baozimh_watermark_bypass(img_url):
+    """Remove watermarks from Baozimh app chapters"""
+    pattern = r'^https?://(?:[\w-]+\.)baozicdn\.com/(.+)$'
+    match = re.match(pattern, img_url)
+    if match:
+        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
+        print(f"DEBUG: Watermark bypass → {clean_url}")
+        return clean_url
+    return img_url
+
 def api_get(path: str, params: dict | None = None) -> dict:
     url = API.rstrip("/") + "/" + path.lstrip("/")
     try:
@@ -1219,14 +1267,8 @@ class ChapterWorker(QThread):
             
             if self.isInterruptionRequested(): return
             
-            def chap_key(c):
-                val = c.get("chapter")
-                if not val: return 999999.0
-                try: return float(val)
-                except ValueError:
-                    match = re.search(r"(\d+(\.\d+)?)", str(val))
-                    return float(match.group(1)) if match else 999999.0
-            chapters.sort(key=chap_key)
+            # Apply newest-first sorting to all sources
+            chapters = sort_chapters_newest_first(chapters)
             
             if not self.isInterruptionRequested():
                 self.finished.emit(chapters)
@@ -1373,6 +1415,9 @@ class DownloadWorker(QThread):
             total_imgs = len(urls)
             for j, url in enumerate(urls, 1):
                 if not self._is_running: break
+                
+                # Apply Baozimh watermark bypass
+                url = baozimh_watermark_bypass(url)
                 
                 fname = f"{j:03d}.jpg"
                 if "." in url:
@@ -1626,15 +1671,8 @@ class DownloadWorker(QThread):
                     else:
                         return False
             
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            img_urls = []
-            
-            # NewToki image extraction
-            for img in soup.find_all("img"):
-                src = img.get("data-src") or img.get("data-original") or img.get("src")
-                if src and any(ext in src.lower() for ext in [".jpg", ".png", ".webp", ".jpeg"]):
-                    if "icon" not in src.lower() and "logo" not in src.lower():
-                        img_urls.append(src)
+            # Use community-validated extraction logic
+            img_urls = extract_newtoki_images_pro(driver)
             
             if not img_urls:
                 self.progress.emit(f"No images found for Ch {ch_num}")
@@ -1653,6 +1691,10 @@ class DownloadWorker(QThread):
             
             def download_one(idx, img_url):
                 if not self._is_running: return
+                
+                # Apply Baozimh watermark bypass (Community Upgrade)
+                img_url = baozimh_watermark_bypass(img_url)
+                
                 time.sleep(random.uniform(4.0, 10.0)) # Even slower image pacing
                 
                 ext = ".jpg"
@@ -1785,6 +1827,10 @@ class DownloadWorker(QThread):
                 total_imgs = len(urls)
                 for j, url in enumerate(urls, 1):
                     if not self._is_running: break
+                    
+                    # Apply Baozimh watermark bypass
+                    url = baozimh_watermark_bypass(url)
+                    
                     fname = f"{j:03d}.jpg"
                     if "." in url:
                         parts = url.split(".")
@@ -2521,6 +2567,20 @@ class ModernMangaDexGUI(QMainWindow):
 
     def fetch_chapters(self, langs=None):
         if not self.selected_manga: return
+        
+        # Proper cleanup of existing chapter worker
+        if hasattr(self, 'chap_worker') and self.chap_worker and self.chap_worker.isRunning():
+            self.chap_worker.requestInterruption()
+            try: self.chap_worker.finished.disconnect()
+            except: pass
+            try: self.chap_worker.error.disconnect()
+            except: pass
+            
+            old_chap = self.chap_worker
+            self._old_workers.append(old_chap)
+            old_chap.finished.connect(lambda: self.cleanup_worker(old_chap))
+            self.chap_worker = None
+
         self.log(f"Fetching chapters...")
         self.loaded_label.setText("Fetching chapters...")
         self.chapter_tree.clear()
@@ -2637,6 +2697,18 @@ class ModernMangaDexGUI(QMainWindow):
         if not selected_chapters:
             QMessageBox.warning(self, "No Selection", "Please select chapters to download.")
             return
+
+        # Proper cleanup of existing download worker
+        if hasattr(self, 'download_worker') and self.download_worker and self.download_worker.isRunning():
+            self.download_worker.stop()
+            self.download_worker.requestInterruption()
+            try: self.download_worker.finished.disconnect()
+            except: pass
+            
+            old_dl = self.download_worker
+            self._old_workers.append(old_dl)
+            old_dl.finished.connect(lambda: self.cleanup_worker(old_dl))
+            self.download_worker = None
 
         default_dir = self.settings.get("last_dir", "")
         base_dir = QFileDialog.getExistingDirectory(self, "Select Download Directory", default_dir)
