@@ -303,132 +303,133 @@ def test_url_works(url, timeout=3):
         except:
             return False
 
-def baozimh_nuclear_watermark_bypass(img_url):
-    """Try EVERY possible clean CDN until 200 OK"""
+def baozimh_universal_watermark_bypass(img_url):
+    """Universal fallback - ALL CDN patterns with HEAD testing"""
     if not img_url: return img_url
     
-    # EXTRACT path (universal)
+    # Extract path after domain
     path_match = re.search(r'https?://[^/]+/(.+)$', img_url)
     if not path_match: return img_url
     path = path_match.group(1)
-     
-    # ALL POSSIBLE clean CDNs (15+ targets)
+    
     clean_cdns = [
         'static-tw.baozimh.com',
         'static.baozimh.com', 
         'img.baozimh.com',
         'cdn.baozimh.com',
-        'tw.baozimh.com',
-        'static-tw.baozicdn.com',
-        'i.baozimh.com',
-        'images.baozimh.com'
+        'tw.baozimh.com'
     ]
-     
-    # Skip if already a clean domain
+    
+    # If already clean, return
     current_domain = urlparse(img_url).netloc
     if current_domain in clean_cdns:
         return img_url
-
-    print(f"🔥 NUCLEAR BYPASS: Testing {len(clean_cdns)} CDNs for {path[:40]}...")
-     
+        
     for cdn in clean_cdns:
         test_url = f"https://{cdn}/{path}"
         if test_url_works(test_url):
-            print(f"✅ CLEAN HIT: {test_url}")
             return test_url
-        time.sleep(0.05)  # Slight rate limit
-     
-    print(f"❌ All CDNs failed - using original: {img_url}")
+            
     return img_url
 
-def extract_images_current_page(driver):
-    """Helper to extract images from current page"""
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    img_tags = soup.find_all('img', class_='comic-contain_ui-Image_img')
-    if not img_tags:
-        img_tags = soup.select("p img")
+def extract_images_with_autoscroll(driver, max_scrolls=10):
+    """Scroll + Wait + Extract ALL images (lazy-loaded)"""
+    print("🔄 Auto-scrolling to load ALL images...")
     
-    urls = []
-    for img in img_tags:
-        src = img.get('data-src') or img.get('src')
-        if src and ('baozimh' in src or 'baozicdn' in src):
-            urls.append(src)
-    return list(dict.fromkeys(urls))
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    scroll_count = 0
+    
+    while scroll_count < max_scrolls:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            break
+        last_height = new_height
+        scroll_count += 1
+        
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    image_urls = []
+    
+    selectors = [
+        'img[src*="baozimh"]', 'img[src*="baozicdn"]', 'img[src*=".jpg"]',
+        'img[src*=".png"]', 'img[src*=".webp"]', 'p img', '.content img',
+        'div.reader img', '[class*="image"] img', 'img.lazy',
+        'img.comic-contain_ui-Image_img'
+    ]
+    
+    for selector in selectors:
+        try:
+            imgs = soup.select(selector)
+            for img in imgs:
+                src = img.get('data-src') or img.get('src') or img.get('data-lazy') or img.get('data-original')
+                if src and src.startswith('http'):
+                    image_urls.append(src)
+        except: pass
+        
+    image_urls = list(dict.fromkeys(image_urls))
+    print(f"✅ Found {len(image_urls)} images after scrolling")
+    return image_urls
 
 def extract_complete_baozimh_chapter_fixed(driver):
-    """FIXED: No loopbacks + Sequential prediction"""
+    """FIXED: No loopbacks + Sequential prediction + Auto-scroll"""
     all_images = []
-    visited_urls = set()  # PREVENT LOOPBACKS
+    visited_urls = set()
     base_url = driver.current_url
     page_num = 1
      
-    while page_num <= 50:  # Max 50 pages
+    while page_num <= 20:
         current_url = driver.current_url
-        print(f"📄 Page {page_num}: {current_url}")
-         
-        # LOOPBACK CHECK
-        if current_url in visited_urls:
-            print("🔄 LOOP DETECTED - switching to sequential prediction")
+        pure_url = current_url.split('#')[0].split('?')[0]
+        
+        if pure_url in visited_urls:
+            print("🔄 LOOP DETECTED - stopping")
             break
-             
-        visited_urls.add(current_url)
-         
-        # Extract images
-        page_images = extract_images_current_page(driver)
+        visited_urls.add(pure_url)
+        
+        print(f"📄 Page {page_num}: {current_url}")
+        
+        # SCROLL + EXTRACT
+        page_images = extract_images_with_autoscroll(driver)
         if page_images:
-            # Apply nuclear bypass to each page's images
-            clean_page_images = [baozimh_nuclear_watermark_bypass(url) for url in page_images]
-            all_images.extend(clean_page_images)
-            print(f"   → {len(page_images)} images")
-        else:
-            print("   → No images found on this page")
+            # Apply bypass immediately
+            clean_images = [baozimh_universal_watermark_bypass(url) for url in page_images]
+            all_images.extend(clean_images)
          
-        # NEXT LINK (with loopback protection)
+        # NEXT LINK
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         next_link = soup.select_one('div.next_chapter a[href*="_"], .next-page a, a[href*="下一頁"]')
          
         if next_link:
             next_href = next_link.get('href')
             next_url = urljoin(current_url, next_href)
-            if next_url not in visited_urls and "#bottom" not in next_href:
-                print(f"🔗 Next link found: {next_url}")
+            if next_url.split('#')[0] not in visited_urls:
+                print(f"🔗 Next link: {next_url}")
                 driver.get(next_url)
                 page_num += 1
                 time.sleep(2)
                 continue
          
-        # SEQUENTIAL PREDICTION (0_80_2 → 0_80_3 → 0_80_4...)
-        # Remove any anchors or params
-        pure_path = current_url.split('#')[0].split('?')[0]
-        
-        if '_2.html' in pure_path:
-            predicted = re.sub(r'_2\.html$', '_3.html', pure_path)
-        elif re.search(r'_(\d+)\.html$', pure_path):
-            predicted = re.sub(r'_(\d+)\.html$', lambda m: f"_{int(m.group(1))+1}.html", pure_path)
+        # SEQUENTIAL PREDICTION
+        if '_2.html' in pure_url:
+            predicted = re.sub(r'_(\d+)\.html$', lambda m: f"_{int(m.group(1))+1}.html", pure_url)
+        elif not re.search(r'_\d+\.html$', pure_url):
+            predicted = pure_url.replace('.html', '_2.html')
         else:
-            predicted = pure_path.replace('.html', '_2.html')
-         
-        if predicted in visited_urls or predicted == pure_path:
-            break
-
-        print(f"🔮 Predicting next page: {predicted}")
-        driver.get(predicted)
-        time.sleep(2)
-         
-        # PAGE EXISTS CHECK (404 or empty)
-        if "404" in driver.title or "not found" in driver.page_source.lower():
-            print(f"✅ End reached (404) at {predicted}")
-            break
+            predicted = re.sub(r'_(\d+)\.html$', lambda m: f"_{int(m.group(1))+1}.html", pure_url)
             
-        # Verify images on predicted page
-        if not extract_images_current_page(driver):
-            print(f"✅ End reached (No Images) at {predicted}")
-            break
-             
-        page_num += 1
+        if predicted and predicted not in visited_urls:
+            print(f"🔮 Predicting: {predicted}")
+            driver.get(predicted)
+            time.sleep(2)
+            if "404" in driver.title or not extract_images_with_autoscroll(driver, max_scrolls=1):
+                break
+            page_num += 1
+            continue
+            
+        break
      
     driver.get(base_url)
-    # Dedupe while preserving order
     return list(dict.fromkeys(all_images))
 
 def extract_complete_baozimh_chapter(driver):
@@ -1528,7 +1529,7 @@ class DownloadWorker(QThread):
                 pass
 
     def download_chapter_generic(self, chapter_url, title, out_path, ch_num, i, total_chaps):
-        """Universal fallback - works for ANY source"""
+        """Universal fallback - works for ANY source with Auto-scroll"""
         if not self._selenium_driver:
             self.progress.emit("Launching Generic Browser...")
             self._selenium_driver = Driver(uc=True, headless=False)
@@ -1536,22 +1537,15 @@ class DownloadWorker(QThread):
         driver = self._selenium_driver
         try:
             driver.get(chapter_url)
-            time.sleep(5) # Wait for load
             
-            # Use existing extraction logic
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
-            img_urls = []
-            for img in soup.find_all('img'):
-                src = img.get('data-src') or img.get('data-original') or img.get('src')
-                if src and any(ext in src.lower() for ext in ['.jpg', '.png', '.webp', '.jpeg']):
-                    if 'icon' not in src.lower() and 'logo' not in src.lower():
-                        img_urls.append(src)
+            # Use industrial-grade auto-scroll extraction
+            img_urls = extract_images_with_autoscroll(driver)
             
             if not img_urls:
                 self.progress.emit(f"No images found for Ch {ch_num}")
                 return False
                 
-            self.progress.emit(f"Found {len(img_urls)} images. Downloading...")
+            self.progress.emit(f"Found {len(img_urls)} total images. Downloading...")
             if not out_path.exists():
                 out_path.mkdir(parents=True, exist_ok=True)
                 
