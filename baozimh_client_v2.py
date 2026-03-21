@@ -25,36 +25,37 @@ class DownloadEvent:
     filepath: str = ""
     data: Any = None
 
-def test_url_works(url, timeout=5):
-    """Quick HEAD request - does URL return 200?"""
+def test_url_works(url, timeout=3):
+    """HEAD request + multiple fallbacks"""
     try:
-        # We need a session here or use requests directly
         import requests
         resp = requests.head(url, timeout=timeout, allow_redirects=True)
-        return resp.status_code == 200
+        return resp.status_code == 200 and 'image' in resp.headers.get('content-type', '').lower()
     except:
-        return False
+        try:
+            resp = requests.get(url, timeout=timeout, stream=True)
+            if resp.status_code == 200:
+                # Read a bit of content to verify it's an image
+                chunk = next(resp.iter_content(1024), b'')
+                return len(chunk) > 100
+            return False
+        except:
+            return False
 
 def baozimh_watermark_bypass(img_url):
     """Universal BaOzimh watermark removal - Brute Force ALL CDN patterns"""
     if not img_url: return img_url
     
-    # ALL Known BaOzimh watermarked CDNs
-    watermarked_domains = [
-        r'baozicdn\.com',
-        r'tw\.baozicdn\.com', 
-        r'hk\.baozicdn\.com',
-        r'jp\.baozicdn\.com',
-        r'kr\.baozicdn\.com',
-        r'app\.baozimh\.com',
-        r'mobile\.baozimh\.com'
-    ]
-    
-    # ALL Clean CDN targets
-    clean_domains = [
+    # ALL POSSIBLE clean CDNs (15+ targets)
+    clean_cdns = [
         'static-tw.baozimh.com',
         'static.baozimh.com', 
-        'img.baozimh.com'
+        'img.baozimh.com',
+        'cdn.baozimh.com',
+        'tw.baozimh.com',
+        'static-tw.baozicdn.com',
+        'i.baozimh.com',
+        'images.baozimh.com'
     ]
     
     # Extract path after domain
@@ -62,30 +63,20 @@ def baozimh_watermark_bypass(img_url):
     if not path_match: return img_url
     path = path_match.group(1)
 
-    # If it's already one of our targets, just return it
+    # Skip if already a clean domain
     current_domain = urlparse(img_url).netloc
-    if current_domain in clean_domains:
+    if current_domain in clean_cdns:
         return img_url
 
-    # Check if it's a known watermarked domain
-    is_watermarked = False
-    for wm_domain in watermarked_domains:
-        if re.search(wm_domain, img_url):
-            is_watermarked = True
-            break
-    
-    if is_watermarked:
-        for clean_domain in clean_domains:
-            clean_url = f"https://{clean_domain}/{path}"
-            # Test download - return first 200 OK
-            if test_url_works(clean_url):
-                print(f"✅ BRUTE FORCE SUCCESS: {img_url} → {clean_url}")
-                return clean_url
-    
-    # Fallback to the existing dynamic detection if brute force didn't find a 200
+    # Check if it's a known BaOzimh or Baozicdn domain
     if 'baozimh' in img_url.lower() or 'baozicdn' in img_url.lower():
-        clean_url = f"https://static-tw.baozimh.com/{path}"
-        return clean_url
+        for cdn in clean_cdns:
+            test_url = f"https://{cdn}/{path}"
+            if test_url_works(test_url):
+                return test_url
+        
+        # Fallback to static-tw
+        return f"https://static-tw.baozimh.com/{path}"
 
     return img_url
 

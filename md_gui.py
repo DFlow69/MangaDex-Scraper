@@ -287,110 +287,140 @@ def extract_newtoki_images_pro(driver):
     # Dedupe
     return list(dict.fromkeys(image_urls))
 
-def test_url_works(url, timeout=5):
-    """Quick HEAD request - does URL return 200?"""
+def test_url_works(url, timeout=3):
+    """HEAD request + multiple fallbacks"""
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True)
-        return resp.status_code == 200
+        return resp.status_code == 200 and 'image' in resp.headers.get('content-type', '').lower()
     except:
-        return False
+        try:
+            resp = requests.get(url, timeout=timeout, stream=True)
+            if resp.status_code == 200:
+                # Read a bit of content to verify it's an image
+                chunk = next(resp.iter_content(1024), b'')
+                return len(chunk) > 100
+            return False
+        except:
+            return False
 
-def baozimh_universal_watermark_bypass(img_url):
-    """Brute force ALL BaOzimh CDN patterns → find clean version"""
+def baozimh_nuclear_watermark_bypass(img_url):
+    """Try EVERY possible clean CDN until 200 OK"""
     if not img_url: return img_url
     
-    # ALL Known BaOzimh watermarked CDNs
-    watermarked_domains = [
-        r'baozicdn\.com',
-        r'tw\.baozicdn\.com', 
-        r'hk\.baozicdn\.com',
-        r'jp\.baozicdn\.com',
-        r'kr\.baozicdn\.com',
-        r'app\.baozimh\.com',
-        r'mobile\.baozimh\.com'
-    ]
-    
-    # ALL Clean CDN targets
-    clean_domains = [
-        'static-tw.baozimh.com',
-        'static.baozimh.com', 
-        'img.baozimh.com'
-    ]
-    
-    # Extract path after domain
+    # EXTRACT path (universal)
     path_match = re.search(r'https?://[^/]+/(.+)$', img_url)
     if not path_match: return img_url
     path = path_match.group(1)
-
-    # If it's already one of our targets, just return it
+     
+    # ALL POSSIBLE clean CDNs (15+ targets)
+    clean_cdns = [
+        'static-tw.baozimh.com',
+        'static.baozimh.com', 
+        'img.baozimh.com',
+        'cdn.baozimh.com',
+        'tw.baozimh.com',
+        'static-tw.baozicdn.com',
+        'i.baozimh.com',
+        'images.baozimh.com'
+    ]
+     
+    # Skip if already a clean domain
     current_domain = urlparse(img_url).netloc
-    if current_domain in clean_domains:
+    if current_domain in clean_cdns:
         return img_url
 
-    # Check if it's a known watermarked domain
-    is_watermarked = False
-    for wm_domain in watermarked_domains:
-        if re.search(wm_domain, img_url):
-            is_watermarked = True
+    print(f"🔥 NUCLEAR BYPASS: Testing {len(clean_cdns)} CDNs for {path[:40]}...")
+     
+    for cdn in clean_cdns:
+        test_url = f"https://{cdn}/{path}"
+        if test_url_works(test_url):
+            print(f"✅ CLEAN HIT: {test_url}")
+            return test_url
+        time.sleep(0.05)  # Slight rate limit
+     
+    print(f"❌ All CDNs failed - using original: {img_url}")
+    return img_url
+
+def extract_images_current_page(driver):
+    """Helper to extract images from current page"""
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    img_tags = soup.find_all('img', class_='comic-contain_ui-Image_img')
+    if not img_tags:
+        img_tags = soup.select("p img")
+    
+    urls = []
+    for img in img_tags:
+        src = img.get('data-src') or img.get('src')
+        if src and ('baozimh' in src or 'baozicdn' in src):
+            urls.append(src)
+    return list(dict.fromkeys(urls))
+
+def extract_complete_baozimh_chapter(driver):
+    """Follow ALL pages: next_chapter OR predict sequential URLs"""
+    all_images = []
+    base_url = driver.current_url
+    page_num = 1
+    visited = {base_url}
+     
+    while True:
+        print(f"📄 Processing page {page_num}...")
+         
+        # 1. Extract images from current page
+        page_images = extract_images_current_page(driver)
+        page_images = [baozimh_nuclear_watermark_bypass(url) for url in page_images]
+        
+        # Dedupe while adding
+        for img in page_images:
+            if img not in all_images:
+                all_images.append(img)
+         
+        # 2. Try next_chapter link FIRST
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        next_link = soup.select_one('div.next_chapter a, .next-page a, a[href*="下一頁"]')
+         
+        if next_link:
+            next_url = urljoin(driver.current_url, next_link.get('href'))
+            if next_url not in visited:
+                print(f"🔗 Next link found: {next_url}")
+                driver.get(next_url)
+                visited.add(next_url)
+                page_num += 1
+                time.sleep(2)
+                continue
+          
+        # 3. PREDICT sequential page (_2.html → _3.html → _4.html...)
+        current_path = driver.current_url
+        if not re.search(r'_\d+\.html$', current_path):
+            # Try appending _2.html if it's the first page
+            predicted_next = re.sub(r'\.html$', '_2.html', current_path)
+        else:
+            predicted_next = re.sub(r'_(\d+)\.html$', lambda m: f"_{int(m.group(1))+1}.html", current_path)
+          
+        if predicted_next in visited:
             break
-    
-    if is_watermarked:
-        for clean_domain in clean_domains:
-            clean_url = f"https://{clean_domain}/{path}"
-            # Test download - return first 200 OK
-            if test_url_works(clean_url):
-                print(f"✅ BRUTE FORCE SUCCESS: {img_url} → {clean_url}")
-                return clean_url
-    
-    # Fallback to the existing dynamic detection if brute force didn't find a 200
-    if 'baozimh' in img_url.lower() or 'baozicdn' in img_url.lower():
-        clean_url = f"https://static-tw.baozimh.com/{path}"
-        return clean_url
 
-    return img_url
-
-def baozimh_watermark_bypass(img_url):
-    """Universal BaOzimh watermark removal - ALL CDN patterns"""
-    if not img_url: return img_url
-    
-    # Pattern 1: Original (baozicdn.com subdomains like tw.baozicdn.com, hk.baozicdn.com)
-    match = re.match(r'^https?://(?:[\w-]+\.)baozicdn\.com/(.+)$', img_url)
-    if match:
-        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
-        print(f"DEBUG: Watermark bypass (P1) → {clean_url}")
-        return clean_url
-     
-    # Pattern 2: Regional CDNs (TW/HK/JP/KR or numeric subdomains)
-    match = re.match(r'^https?://(?:tw|hk|jp|kr|\d+)\.baozimh\.com/(.+)$', img_url)
-    if match:
-        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
-        print(f"DEBUG: Watermark bypass (P2) → {clean_url}")
-        return clean_url
-     
-    # Pattern 3: App-specific or Static CDNs
-    match = re.match(r'^https?://(?:app|mobile|static[-\w]*)\.baozimh\.com/(.+)$', img_url)
-    if match:
-        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
-        print(f"DEBUG: Watermark bypass (P3) → {clean_url}")
-        return clean_url
-     
-    # Pattern 4: Cloudflare or Direct IP patterns on baozimh domain
-    match = re.match(r'^https?://(?:\d{1,3}(?:\.\d{1,3}){3}|[\w-]+\.cloudflare)\.baozimh\.com/(.+)$', img_url)
-    if match:
-        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
-        print(f"DEBUG: Watermark bypass (P4) → {clean_url}")
-        return clean_url
-
-    # Fallback: Dynamic detection for anything containing baozimh/baozicdn
-    if 'baozimh' in img_url.lower() or 'baozicdn' in img_url.lower():
-        # Extract path after the domain
-        path_match = re.search(r'https?://[^/]+/(.+)$', img_url)
-        if path_match:
-            clean_url = f"https://static-tw.baozimh.com/{path_match.group(1)}"
-            print(f"🔄 AUTO BYPASS: {img_url} → {clean_url}")
-            return clean_url
-            
-    return img_url
+        print(f"🔮 Predicting: {predicted_next}")
+        driver.get(predicted_next)
+        visited.add(predicted_next)
+        time.sleep(2)
+          
+        # 4. Check if page exists (title, content, 404)
+        if "404" in driver.title.lower() or "not found" in driver.page_source.lower():
+            print(f"✅ End reached at predicted {predicted_next}")
+            break
+              
+        # 5. Has images? Continue!
+        new_page_images = extract_images_current_page(driver)
+        if new_page_images:
+            page_num += 1
+            continue
+          
+        # 6. Empty page = END
+        print(f"✅ Chapter complete: {len(all_images)} images")
+        break
+      
+    driver.get(base_url)  # Return to start page
+    return all_images
 
 def api_get(path: str, params: dict | None = None) -> dict:
     url = API.rstrip("/") + "/" + path.lstrip("/")
@@ -1285,6 +1315,65 @@ class SearchWorker(QThread):
         self.query = query
         self.site = site
 
+    def download_chapter_baozimh_pro(self, chap, out_path, ch_num, i, total_chaps):
+        """Baozimh Industrial Download: Selenium + Multi-page + Nuclear Bypass"""
+        if not selenium_available:
+            self.progress.emit("Selenium not available for Baozimh pro extraction")
+            return False
+            
+        if not self._selenium_driver:
+            self.progress.emit("Launching Browser for Baozimh Pro...")
+            self._selenium_driver = Driver(uc=True, headless=False, disable_csp=True, undetectable=True, browser="chrome", user_data_dir=None)
+        
+        driver = self._selenium_driver
+        url = chap['id'] if chap['id'].startswith("http") else urljoin(BAOZIMH_BASE, chap['id'])
+        
+        try:
+            driver.get(url)
+            time.sleep(2)
+            
+            # Use industrial-grade multi-page extraction
+            img_urls = extract_complete_baozimh_chapter(driver)
+            
+            if not img_urls:
+                self.progress.emit(f"No images found for Baozimh Ch {ch_num}")
+                return False
+                
+            self.progress.emit(f"Found {len(img_urls)} images across multiple pages. Downloading...")
+            if not out_path.exists():
+                out_path.mkdir(parents=True, exist_ok=True)
+                
+            session = requests.Session()
+            for j, img_url in enumerate(img_urls, 1):
+                if not self._is_running: break
+                
+                # Apply nuclear bypass (already applied in extract_complete_baozimh_chapter, but double check)
+                img_url = baozimh_nuclear_watermark_bypass(img_url)
+                
+                ext = ".jpg"
+                if ".png" in img_url.lower(): ext = ".png"
+                elif ".webp" in img_url.lower(): ext = ".webp"
+                
+                fname = out_path / f"{j:03d}{ext}"
+                if not fname.exists():
+                    try:
+                        r = session.get(img_url, timeout=30, stream=True)
+                        r.raise_for_status()
+                        with open(fname, "wb") as f:
+                            for chunk in r.iter_content(8192):
+                                f.write(chunk)
+                    except Exception as e:
+                        print(f"Error downloading {img_url}: {e}")
+                
+                chapter_progress = j / len(img_urls)
+                total_progress = ((i + chapter_progress) / total_chaps) * 100
+                self.percent.emit(int(total_progress))
+                
+            return True
+        except Exception as e:
+            if self.debug_mode: print(f"DEBUG: Baozimh Pro failed: {e}")
+            return False
+
     def run(self):
         try:
             if self.isInterruptionRequested(): return
@@ -1848,36 +1937,9 @@ class DownloadWorker(QThread):
                 out_path = Path(self.base_dir) / folder_name
 
                 if self.site == "baozimh":
-                    # Baozimh Download
-                    if not out_path.exists():
-                        out_path.mkdir(parents=True, exist_ok=True)
-
-                    current_chapter_total = 0
-                    for event in BAOZI_CLIENT.download_chapter_generator(chap['id'], str(out_path)):
-                        if not self._is_running: break
-                        
-                        if event.type == 'start':
-                            current_chapter_total = event.total
-                            self.progress.emit(f"Ch {ch_num}: {event.message}")
-                        elif event.type == 'progress':
-                            self.progress.emit(f"Ch {ch_num}: {event.message}")
-                            if current_chapter_total > 0:
-                                chapter_progress = event.current / current_chapter_total
-                                total_progress = ((i + chapter_progress) / total_chaps) * 100
-                                self.percent.emit(int(total_progress))
-                        elif event.type == 'error':
-                            self.progress.emit(f"Error Ch {ch_num}: {event.message}")
-                        elif event.type == 'message':
-                            self.progress.emit(f"Ch {ch_num}: {event.message}")
-                        elif event.type == 'complete':
-                            self.progress.emit(f"Ch {ch_num}: {event.message}")
-                    
-                    if not self._is_running: break
-                    # Update progress after each chapter
-                    self.percent.emit(int(((i + 1) / total_chaps) * 100))
-                    
-                    # Common Metadata & CBZ
-                    self._finalize_chapter(out_path, folder_name, chap)
+                    # Baozimh Industrial Download
+                    if self.download_chapter_baozimh_pro(chap, out_path, ch_num, i, total_chaps):
+                        self._finalize_chapter(out_path, folder_name, chap)
                     continue
 
                 elif self.site == "happymh":
