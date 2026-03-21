@@ -26,13 +26,46 @@ class DownloadEvent:
     data: Any = None
 
 def baozimh_watermark_bypass(img_url):
-    """Remove watermarks from Baozimh app chapters"""
-    pattern = r'^https?://(?:[\w-]+\.)baozicdn\.com/(.+)$'
-    match = re.match(pattern, img_url)
+    """Universal BaOzimh watermark removal - ALL CDN patterns"""
+    if not img_url: return img_url
+    
+    # Pattern 1: Original (baozicdn.com subdomains like tw.baozicdn.com, hk.baozicdn.com)
+    match = re.match(r'^https?://(?:[\w-]+\.)baozicdn\.com/(.+)$', img_url)
     if match:
         clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
-        print(f"DEBUG: Watermark bypass → {clean_url}")
+        print(f"DEBUG: Watermark bypass (P1) → {clean_url}")
         return clean_url
+     
+    # Pattern 2: Regional CDNs (TW/HK/JP/KR or numeric subdomains)
+    match = re.match(r'^https?://(?:tw|hk|jp|kr|\d+)\.baozimh\.com/(.+)$', img_url)
+    if match:
+        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
+        print(f"DEBUG: Watermark bypass (P2) → {clean_url}")
+        return clean_url
+     
+    # Pattern 3: App-specific or Static CDNs
+    match = re.match(r'^https?://(?:app|mobile|static[-\w]*)\.baozimh\.com/(.+)$', img_url)
+    if match:
+        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
+        print(f"DEBUG: Watermark bypass (P3) → {clean_url}")
+        return clean_url
+     
+    # Pattern 4: Cloudflare or Direct IP patterns on baozimh domain
+    match = re.match(r'^https?://(?:\d{1,3}(?:\.\d{1,3}){3}|[\w-]+\.cloudflare)\.baozimh\.com/(.+)$', img_url)
+    if match:
+        clean_url = f"https://static-tw.baozimh.com/{match.group(1)}"
+        print(f"DEBUG: Watermark bypass (P4) → {clean_url}")
+        return clean_url
+
+    # Fallback: Dynamic detection for anything containing baozimh/baozicdn
+    if 'baozimh' in img_url.lower() or 'baozicdn' in img_url.lower():
+        # Extract path after the domain
+        path_match = re.search(r'https?://[^/]+/(.+)$', img_url)
+        if path_match:
+            clean_url = f"https://static-tw.baozimh.com/{path_match.group(1)}"
+            print(f"🔄 AUTO BYPASS: {img_url} → {clean_url}")
+            return clean_url
+            
     return img_url
 
 class BaozimhClient:
